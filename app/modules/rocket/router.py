@@ -7,7 +7,6 @@ rocket_router = APIRouter()
 
 # 로그인
 @rocket_router.get("/estimate/refreshTokenTest")
-def login(
-):
+def test():
     print("TEST")
     return None
