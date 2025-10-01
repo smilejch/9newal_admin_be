@@ -43,3 +43,10 @@ def update_company_profile(company_request: common_schemas.CompanyUpdateRequest,
 @common_router.get("/company/profile")
 def fetch_company_profile(request: Request, db: Session = Depends(get_db)):
     return common_service.fetch_company_profile(request, db)
+
+# 회사 목록 조회
+@common_router.get("/companies")
+def fetch_company_list(
+        db: Session = Depends(get_db)
+) -> ApiResponse[list]:
+    return common_service.fetch_company_list(db)

@@ -5,7 +5,7 @@ from app.common.response import ApiResponse, PageResponse
 from app.common.schemas.request import PaginationRequest
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.modules.setting.schemas import SkuBase, SkuFilterRequest
+from app.modules.setting.schemas import SkuBase, SkuFilterRequest, UserBase, UserFilterRequest, CompanyFilterRequest, CompanyBase
 from app.modules.setting import service as setting_service
 from typing import Union
 
@@ -118,3 +118,104 @@ def fetch_center_list(
 ) -> ApiResponse[dict]:
     return setting_service.fetch_center_list(request, db)
 
+# 사용자 생성
+@setting_router.post("/users")
+def create_user(
+    user_info: UserBase,
+    request: Request,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.create_user(user_info, request, db)
+
+
+# 사용자 목록 조회 (페이지네이션 및 필터링)
+@setting_router.post("/users/search")
+def fetch_user_list(
+    request: Request,
+    filter: UserFilterRequest,
+    db: Session = Depends(get_db),
+    pagination: PaginationRequest = Depends()
+) -> ApiResponse[PageResponse[UserBase]]:
+    return setting_service.fetch_user_list(request, filter, db, pagination)
+
+
+# 사용자 상세 조회
+@setting_router.get("/users/{user_no}")
+def fetch_user(
+    user_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.fetch_user(user_no, request, db)
+
+
+# 사용자 수정
+@setting_router.put("/users/{user_no}")
+def update_user(
+    user_info: UserBase,
+    user_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.update_user(user_info, user_no, request, db)
+
+
+# 사용자 삭제
+@setting_router.delete("/users/{user_no}")
+def delete_user(
+    user_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.delete_user(user_no, request, db)
+
+# 회사 생성
+@setting_router.post("/companies")
+def create_company(
+    company_info: CompanyBase,
+    request: Request,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.create_company(company_info, request, db)
+
+
+# 회사 목록 조회 (페이지네이션 및 필터링)
+@setting_router.post("/companies/search")
+def fetch_company_list(
+    request: Request,
+    filter: CompanyFilterRequest,
+    db: Session = Depends(get_db),
+    pagination: PaginationRequest = Depends()
+) -> ApiResponse[PageResponse[CompanyBase]]:
+    return setting_service.fetch_company_list(request, filter, db, pagination)
+
+
+# 회사 상세 조회
+@setting_router.get("/companies/{company_no}")
+def fetch_company(
+    company_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.fetch_company(company_no, request, db)
+
+
+# 회사 수정
+@setting_router.put("/companies/{company_no}")
+def update_company(
+    company_info: CompanyBase,
+    company_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.update_company(company_info, company_no, request, db)
+
+
+# 회사 삭제
+@setting_router.delete("/companies/{company_no}")
+def delete_company(
+    company_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return setting_service.delete_company(company_no, request, db)

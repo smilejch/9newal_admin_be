@@ -1,7 +1,8 @@
 # app/modules/setting/schemas.py
 from pydantic import BaseModel
-from typing import Optional, Union
+from typing import Optional, Union, List
 from decimal import Decimal
+from datetime import datetime
 
 
 class SkuBase(BaseModel):
@@ -41,6 +42,8 @@ class SkuBase(BaseModel):
     image_path: Optional[str] = None
     created_by: Optional[int] = None
     updated_by: Optional[int] = None
+    company_no: Optional[int] = None
+    company_name: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -51,6 +54,7 @@ class SkuFilterRequest(BaseModel):
     exposure_id: Optional[str] = None
     sku_name: Optional[str] = None
     barcode: Optional[str] = None
+    company_no: Optional[List[int]] = None  # 회사 번호 배열 추가
 
 
 # schemas.py에 스키마 정의
@@ -64,3 +68,56 @@ class CenterBase(BaseModel):
 
     class Config:
         from_attributes = True  # SQLAlchemy 모델에서 변환 가능
+
+
+class UserBase(BaseModel):
+    """사용자 기본 스키마"""
+    user_no: Optional[Union[int, str]] = None
+    user_id: Optional[str] = None
+    user_email: Optional[str] = None
+    user_password: Optional[str] = None  # 생성/수정 시에만 사용
+    user_name: Optional[str] = None
+    contact: Optional[str] = None
+    user_status_cd: Optional[str] = None
+    user_status_name: Optional[str] = None
+    company_no: Optional[int] = None
+    company_name: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UserFilterRequest(BaseModel):
+    """사용자 필터 요청"""
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    user_email: Optional[str] = None
+    contact: Optional[str] = None
+    user_status_cd: Optional[str] = None
+    company_no: Optional[List[int]] = None  # 회사 번호 배열 추가
+
+class CompanyBase(BaseModel):
+    """회사 기본 스키마"""
+    company_no: Optional[Union[int, str]] = None
+    company_name: Optional[str] = None
+    coupang_vendor_id: Optional[str] = None
+    business_registration_number: Optional[str] = None
+    company_status_cd: Optional[str] = None
+    company_status_name: Optional[str] = None  # 조회 시에만 사용
+    address: Optional[str] = None
+    address_dtl: Optional[str] = None
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class CompanyFilterRequest(BaseModel):
+    """회사 필터 요청"""
+    company_name: Optional[str] = None
+    coupang_vendor_id: Optional[str] = None
+    business_registration_number: Optional[str] = None
+    company_status_cd: Optional[str] = None

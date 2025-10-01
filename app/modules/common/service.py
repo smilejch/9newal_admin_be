@@ -341,3 +341,34 @@ def fetch_company_profile(request: Request, db: Session):
         address=company_profile.address,
         address_dtl=company_profile.address_dtl,
     )
+
+
+def fetch_company_list(db: Session):
+    try:
+        # 회사 목록 조회
+        companies = db.query(
+            auth_models.ComCompany.company_no,
+            auth_models.ComCompany.company_name
+        ).order_by(
+            auth_models.ComCompany.company_name
+        ).all()
+
+        # 결과를 딕셔너리 리스트로 변환
+        company_list = [
+            {
+                "company_no": company.company_no,
+                "company_name": company.company_name
+            }
+            for company in companies
+        ]
+
+        return ResponseBuilder.success(
+            data=company_list,
+            message="회사 목록 조회가 완료되었습니다."
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )

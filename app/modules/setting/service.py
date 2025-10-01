@@ -2,6 +2,8 @@ from fastapi import Depends, Request, status, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import desc, or_
 from app.utils import file_util, com_code_util
+from app.utils import crypto_util
+from app.core.security import hash_password
 import pandas as pd
 
 import os
@@ -13,13 +15,13 @@ from app.common import response as common_response
 from app.common.schemas.request import PaginationRequest
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from app.modules.setting.schemas import SkuBase, SkuFilterRequest, CenterBase
+from app.modules.setting.schemas import SkuBase, SkuFilterRequest, UserBase, CenterBase, UserFilterRequest, CompanyFilterRequest, CompanyBase
 from app.modules.setting import models as setting_models
 from app.modules.common import models as common_models
+from app.modules.auth import models as auth_models
 from typing import Union
 from app.utils.auth_util import get_authenticated_user_no
 from app.modules.common import service as common_service
-
 
 def create_sku(
         sku_info: SkuBase,
@@ -27,7 +29,15 @@ def create_sku(
         db: Session = Depends(get_db)
 ) -> common_response.ApiResponse[Union[dict, None]]:
     try:
-        user_no, company_no = get_authenticated_user_no(request)
+        user_no, _ = get_authenticated_user_no(request)  # company_no는 사용하지 않음
+
+        # ✅ 회사 번호 검증 (프론트에서 넘어온 값 사용)
+        company_no = sku_info.company_no
+        if not company_no:
+            raise HTTPException(
+                status_code=400,
+                detail="회사 번호는 필수 입력 항목입니다."
+            )
 
         # SKU ID 8자리 숫자 검증
         sku_id = sku_info.sku_id
@@ -158,16 +168,16 @@ def create_sku(
                 barcode = existing_sku_for_barcode.barcode
 
         # Pydantic 모델을 dict로 변환 후 setting_models.SetSku 생성
-        sku_dict = sku_info.dict(exclude_unset=True, exclude={'sku_no', 'option_type'})
+        sku_dict = sku_info.dict(exclude_unset=True, exclude={'sku_no', 'option_type', 'company_name'})
 
         # 검증된 값들 설정
         sku_dict['sku_id'] = sku_id
         sku_dict['bundle'] = bundle
         sku_dict['barcode'] = barcode  # 검증된 바코드 설정
+        sku_dict['company_no'] = company_no  # 프론트에서 넘어온 회사 번호
 
         # 생성자 정보 추가
         sku_dict['created_by'] = user_no
-        sku_dict['company_no'] = company_no
 
         new_sku = setting_models.SetSku(**sku_dict)
 
@@ -178,6 +188,7 @@ def create_sku(
         # 정상적으로 저장된 값 셋팅
         data = {
             "sku_no": new_sku.sku_no,
+            "company_no": new_sku.company_no,
             "sku_id": new_sku.sku_id,
             "sku_name": new_sku.sku_name,
             "bundle": new_sku.bundle,
@@ -209,8 +220,6 @@ def fetch_sku_list(
 ) -> common_response.ApiResponse[Union[common_response.PageResponse[SkuBase], None]]:
     try:
 
-        user_no, company_no = get_authenticated_user_no(request)
-
         # 포장비닐규격 공통코드 서브쿼리 생성
         package_vinyl_subquery = db.query(common_models.ComCode.code_name).filter(
             common_models.ComCode.com_code == setting_models.SetSku.package_vinyl_spec_cd,
@@ -219,7 +228,7 @@ def fetch_sku_list(
             common_models.ComCode.del_yn == 0
         ).scalar_subquery()
 
-        # FTA 공통코드 서브쿼리 생성 (다른 _cd 컬럼이 있다면 추가)
+        # FTA 공통코드 서브쿼리 생성
         fta_subquery = db.query(common_models.ComCode.code_name).filter(
             common_models.ComCode.com_code == setting_models.SetSku.fta_cd,
             common_models.ComCode.parent_com_code == "FTA_CD",
@@ -227,7 +236,7 @@ def fetch_sku_list(
             common_models.ComCode.del_yn == 0
         ).scalar_subquery()
 
-        # 납품여부 공통코드 서브쿼리 생성 (다른 _cd 컬럼이 있다면 추가)
+        # 납품여부 공통코드 서브쿼리 생성
         delivery_status_subquery = db.query(common_models.ComCode.code_name).filter(
             common_models.ComCode.com_code == setting_models.SetSku.delivery_status_cd,
             common_models.ComCode.parent_com_code == "DELIVERY_STATUS_CD",
@@ -235,19 +244,30 @@ def fetch_sku_list(
             common_models.ComCode.del_yn == 0
         ).scalar_subquery()
 
-        # 쿼리 생성 및 기본 필터 (서브쿼리 결과를 label로 추가)
+        # 쿼리 생성 및 기본 필터 (회사 정보 JOIN 추가)
         query = db.query(
             setting_models.SetSku,
             package_vinyl_subquery.label("package_vinyl_spec_name"),
             fta_subquery.label("fta_name"),
-            delivery_status_subquery.label("delivery_status_name")
+            delivery_status_subquery.label("delivery_status_name"),
+            auth_models.ComCompany.company_name
+        ).outerjoin(
+            auth_models.ComCompany,
+            setting_models.SetSku.company_no == auth_models.ComCompany.company_no
         ).filter(
-            setting_models.SetSku.del_yn == 0,
-            setting_models.SetSku.company_no == company_no
+            setting_models.SetSku.del_yn == 0
         )
+
+        # company_no 필터 적용 (리스트가 비어있지 않은 경우)
+        if filter.company_no and len(filter.company_no) > 0:
+            query = query.filter(setting_models.SetSku.company_no.in_(filter.company_no))
 
         # SkuFilterRequest 조건 동적 적용 (LIKE 검색)
         for filter_field, filter_value in filter.dict().items():
+            # company_no는 이미 처리했으므로 스킵
+            if filter_field == 'company_no':
+                continue
+
             # 필터 값이 None이거나 빈 문자열이 아닌 경우에만 조건 적용
             if filter_value is not None and str(filter_value).strip() != '':
                 # setting_models.SetSku 모델에 해당 필드가 존재하는지 확인
@@ -261,12 +281,19 @@ def fetch_sku_list(
 
         # 전체 개수 (서브쿼리 없이 카운트)
         count_query = db.query(setting_models.SetSku).filter(
-            setting_models.SetSku.del_yn == 0,
-            setting_models.SetSku.company_no == company_no
+            setting_models.SetSku.del_yn == 0
         )
+
+        # company_no 필터 적용 (count_query에도)
+        if filter.company_no and len(filter.company_no) > 0:
+            count_query = count_query.filter(setting_models.SetSku.company_no.in_(filter.company_no))
 
         # 같은 필터 조건 적용
         for filter_field, filter_value in filter.dict().items():
+            # company_no는 이미 처리했으므로 스킵
+            if filter_field == 'company_no':
+                continue
+
             if filter_value is not None and str(filter_value).strip() != '':
                 if hasattr(setting_models.SetSku, filter_field):
                     model_column = getattr(setting_models.SetSku, filter_field)
@@ -281,19 +308,22 @@ def fetch_sku_list(
         # 결과를 딕셔너리 리스트로 변환
         sku_list = []
         for result in results:
-            # result.SetSku는 SKU 객체, result.package_vinyl_spec_name은 서브쿼리 결과
+            # result에서 각 컬럼 추출
             sku = result.SetSku if hasattr(result, 'SetSku') else result[0]
-            package_vinyl_spec_name = result.package_vinyl_spec_name if hasattr(result, 'package_vinyl_spec_name') else result[1]
+            package_vinyl_spec_name = result.package_vinyl_spec_name if hasattr(result, 'package_vinyl_spec_name') else \
+            result[1]
             fta_name = result.fta_name if hasattr(result, 'fta_name') else result[2]
             delivery_status_name = result.delivery_status_name if hasattr(result, 'delivery_status_name') else result[3]
+            company_name = result.company_name if hasattr(result, 'company_name') else result[4]
 
             # SKU를 딕셔너리로 변환
             sku_dict = SkuBase.from_orm(sku).dict()
 
-            # 서브쿼리 결과 추가
+            # 서브쿼리 및 JOIN 결과 추가
             sku_dict['package_vinyl_spec_name'] = package_vinyl_spec_name
             sku_dict['fta_name'] = fta_name
             sku_dict['delivery_status_name'] = delivery_status_name
+            sku_dict['company_name'] = company_name
 
             sku_list.append(sku_dict)
 
@@ -311,26 +341,39 @@ def fetch_sku_list(
             detail=f"SKU 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
 
+
 def fetch_sku(
         sku_no: Union[str, int],
         db: Session = Depends(get_db)
 ) -> common_response.ApiResponse[Union[dict, None]]:
     try:
-        # ID로 SKU 조회
-        sku = db.query(setting_models.SetSku).filter(
+        # ID로 SKU 조회 (회사 정보 JOIN)
+        result = db.query(
+            setting_models.SetSku,
+            auth_models.ComCompany.company_name
+        ).outerjoin(
+            auth_models.ComCompany,
+            setting_models.SetSku.company_no == auth_models.ComCompany.company_no
+        ).filter(
             setting_models.SetSku.sku_no == sku_no,
             setting_models.SetSku.del_yn == 0
         ).first()
 
-        if not sku:
+        if not result:
             raise HTTPException(
                 status_code=400,
                 detail=f"ID {sku_no}에 해당하는 SKU를 찾을 수 없습니다."
             )
 
+        # result에서 SKU와 회사명 추출
+        sku = result[0]
+        company_name = result[1]
+
         # SKU 데이터를 dict로 변환
         data = {
             "sku_no": sku.sku_no,
+            "company_no": sku.company_no,
+            "company_name": company_name,
             "sku_id": sku.sku_id,
             "exposure_id": sku.exposure_id,
             "bundle": sku.bundle,
@@ -1331,4 +1374,815 @@ def fetch_center_list(
         raise HTTPException(
             status_code=400,
             detail=f"센터 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def create_user(
+        user_info: UserBase,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """사용자 생성"""
+    try:
+        current_user_no, company_no = get_authenticated_user_no(request)
+
+        # 필수 필드 검증
+        if not user_info.user_id or not user_info.user_id.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="사용자 ID는 필수 입력 항목입니다."
+            )
+
+        if not user_info.user_email or not str(user_info.user_email).strip():
+            raise HTTPException(
+                status_code=400,
+                detail="이메일은 필수 입력 항목입니다."
+            )
+
+        if not user_info.user_password or not user_info.user_password.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="비밀번호는 필수 입력 항목입니다."
+            )
+
+        if not user_info.user_name or not user_info.user_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="사용자 이름은 필수 입력 항목입니다."
+            )
+
+        # 비밀번호 길이 검증
+        if len(user_info.user_password) < 8:
+            raise HTTPException(
+                status_code=400,
+                detail="비밀번호는 8자 이상이어야 합니다."
+            )
+
+        # 중복 체크 - user_id
+        existing_user_by_id = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_id == user_info.user_id.strip()
+        ).first()
+
+        if existing_user_by_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"이미 사용중인 아이디입니다: {user_info.user_id}"
+            )
+
+        # 중복 체크 - user_email (암호화된 이메일과 비교를 위해 모든 사용자 조회)
+        encrypted_input_email = crypto_util.encrypt(str(user_info.user_email).strip())
+
+        existing_user_by_email = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_email == encrypted_input_email
+        ).first()
+
+        if existing_user_by_email:
+            raise HTTPException(
+                status_code=400,
+                detail=f"이미 등록된 이메일입니다: {user_info.user_email}"
+            )
+
+        # Pydantic 모델을 dict로 변환
+        user_dict = user_info.dict(exclude_unset=True, exclude={'user_no'})
+
+        # 개인정보 암호화
+        encrypted_name = crypto_util.encrypt(user_info.user_name.strip())
+        encrypted_email = crypto_util.encrypt(str(user_info.user_email).strip())
+        encrypted_contact = crypto_util.encrypt(user_info.contact.strip()) if user_info.contact else None
+
+        # 비밀번호 해싱
+        hashed_password = hash_password(user_info.user_password)
+
+        # 암호화된 데이터로 교체
+        user_dict['user_name'] = encrypted_name
+        user_dict['user_email'] = encrypted_email
+        user_dict['user_password'] = hashed_password
+        if encrypted_contact:
+            user_dict['contact'] = encrypted_contact
+
+        # 회사 번호 설정
+        if not user_dict.get('company_no'):
+            user_dict['company_no'] = company_no
+
+        # 사용자 상태 설정 (기본값)
+        if not user_dict.get('user_status_cd'):
+            user_dict['user_status_cd'] = 'ACTIVE'
+
+        # 새 사용자 생성
+        new_user = auth_models.ComUser(**user_dict)
+
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
+
+        # 응답 데이터 (복호화된 정보로 반환, 비밀번호 제외)
+        data = {
+            "user_no": new_user.user_no,
+            "user_id": new_user.user_id,
+            "user_email": user_info.user_email,  # 원본 이메일
+            "user_name": user_info.user_name,  # 원본 이름
+            "contact": user_info.contact,  # 원본 연락처
+            "user_status_cd": new_user.user_status_cd,
+            "company_no": new_user.company_no,
+            "created_at": new_user.created_at
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="사용자가 성공적으로 등록되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 생성 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def fetch_user_list(
+        filter: UserFilterRequest,
+        db: Session = Depends(get_db),
+        pagination: PaginationRequest = Depends()
+) -> common_response.ApiResponse[Union[common_response.PageResponse[UserBase], None]]:
+    """사용자 목록 조회"""
+    try:
+        # 사용자 상태 공통코드 미리 조회
+        user_status_codes = com_code_util.get_com_code_dict_by_parent_code("USER_STATUS_CD", db)
+
+        # 기본 쿼리 (회사 정보 JOIN 추가)
+        query = db.query(
+            auth_models.ComUser,
+            auth_models.ComCompany.company_name
+        ).outerjoin(
+            auth_models.ComCompany,
+            auth_models.ComUser.company_no == auth_models.ComCompany.company_no
+        )
+
+        # UserFilterRequest 조건 동적 적용
+        # user_id는 암호화되지 않으므로 LIKE 검색 가능
+        if filter.user_id:
+            query = query.filter(auth_models.ComUser.user_id.like(f"%{filter.user_id.strip()}%"))
+
+        # 이메일, 이름, 연락처는 암호화되어 있어 LIKE 검색 불가
+        # 필요시 모든 데이터를 가져와서 복호화 후 필터링해야 함
+        if filter.user_email or filter.user_name or filter.contact:
+            # 암호화된 필드 검색은 성능상 문제가 있을 수 있음
+            # 전체 데이터를 가져와서 메모리에서 필터링하거나
+            # 검색 기능을 제한하는 것을 권장
+            pass
+
+        if filter.user_status_cd:
+            query = query.filter(auth_models.ComUser.user_status_cd == filter.user_status_cd)
+
+        # 정렬 (최신 순)
+        query = query.order_by(desc(auth_models.ComUser.user_no))
+
+        # 전체 개수 계산 (JOIN 없이)
+        count_query = db.query(auth_models.ComUser)
+
+        if filter.user_id:
+            count_query = count_query.filter(auth_models.ComUser.user_id.like(f"%{filter.user_id.strip()}%"))
+
+        if filter.user_status_cd:
+            count_query = count_query.filter(auth_models.ComUser.user_status_cd == filter.user_status_cd)
+
+        total_elements = count_query.count()
+
+        # 페이징
+        offset = (pagination.page - 1) * pagination.size
+        results = query.offset(offset).limit(pagination.size).all()
+
+        # 결과를 딕셔너리 리스트로 변환 (복호화, 비밀번호 제외)
+        user_list = []
+        for result in results:
+            # result에서 User와 company_name 추출
+            user = result[0]
+            company_name = result[1]
+
+            # 개인정보 복호화
+            decrypted_name = crypto_util.decrypt(user.user_name) if user.user_name else None
+            decrypted_email = crypto_util.decrypt(user.user_email) if user.user_email else None
+            decrypted_contact = crypto_util.decrypt(user.contact) if user.contact else None
+
+            # 사용자 상태 코드명 변환
+            user_status_name = None
+            if user.user_status_cd and user_status_codes:
+                status_code = user_status_codes.get(user.user_status_cd)
+                if status_code:
+                    user_status_name = status_code.code_name
+
+            user_dict = {
+                "user_no": user.user_no,
+                "user_id": user.user_id,
+                "user_email": decrypted_email,
+                "user_name": decrypted_name,
+                "contact": decrypted_contact,
+                "user_status_cd": user.user_status_cd,
+                "user_status_name": user_status_name,  # 상태 코드명 추가
+                "company_no": user.company_no,
+                "company_name": company_name,
+                "created_at": user.created_at,
+                "updated_at": user.updated_at
+            }
+            user_list.append(user_dict)
+
+        return common_response.ResponseBuilder.paged_success(
+            content=user_list,
+            page=pagination.page,
+            size=pagination.size,
+            total_elements=total_elements
+        )
+
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def fetch_user(
+        user_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """사용자 상세 조회"""
+    try:
+        # 사용자 조회
+        user = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_no == user_no
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ID {user_no}에 해당하는 사용자를 찾을 수 없습니다."
+            )
+
+        # 개인정보 복호화
+        decrypted_name = crypto_util.decrypt(user.user_name) if user.user_name else None
+        decrypted_email = crypto_util.decrypt(user.user_email) if user.user_email else None
+        decrypted_contact = crypto_util.decrypt(user.contact) if user.contact else None
+
+        # 사용자 데이터를 dict로 변환 (비밀번호 제외)
+        data = {
+            "user_no": user.user_no,
+            "user_id": user.user_id,
+            "user_email": decrypted_email,
+            "user_name": decrypted_name,
+            "contact": decrypted_contact,
+            "user_status_cd": user.user_status_cd,
+            "company_no": user.company_no,
+            "created_at": user.created_at,
+            "updated_at": user.updated_at
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="사용자 상세 조회가 완료되었습니다."
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def update_user(
+        user_info: UserBase,
+        user_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """사용자 수정"""
+    try:
+        # 업데이트할 사용자 찾기
+        existing_user = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_no == user_no
+        ).first()
+
+        if not existing_user:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ID {user_no}에 해당하는 사용자를 찾을 수 없습니다."
+            )
+
+        # Pydantic 모델을 dict로 변환 (None 값 제외)
+        update_dict = user_info.dict(exclude_unset=True, exclude={'user_no'})
+
+        # 업데이트할 필드가 있는지 확인
+        if not update_dict:
+            raise HTTPException(
+                status_code=400,
+                detail="업데이트할 필드가 없습니다."
+            )
+
+        # user_id 중복 체크 (자기 자신 제외)
+        if 'user_id' in update_dict:
+            duplicate_user_id = db.query(auth_models.ComUser).filter(
+                auth_models.ComUser.user_id == update_dict['user_id'],
+                auth_models.ComUser.user_no != user_no
+            ).first()
+
+            if duplicate_user_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 사용중인 아이디입니다: {update_dict['user_id']}"
+                )
+
+        # user_email 중복 체크 (암호화 후 비교, 자기 자신 제외)
+        if 'user_email' in update_dict:
+            encrypted_email = crypto_util.encrypt(update_dict['user_email'])
+            duplicate_email = db.query(auth_models.ComUser).filter(
+                auth_models.ComUser.user_email == encrypted_email,
+                auth_models.ComUser.user_no != user_no
+            ).first()
+
+            if duplicate_email:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 등록된 이메일입니다: {update_dict['user_email']}"
+                )
+
+            # 이메일 암호화
+            update_dict['user_email'] = encrypted_email
+
+        # 이름 암호화
+        if 'user_name' in update_dict:
+            update_dict['user_name'] = crypto_util.encrypt(update_dict['user_name'])
+
+        # 연락처 암호화
+        if 'contact' in update_dict:
+            update_dict['contact'] = crypto_util.encrypt(update_dict['contact'])
+
+        # 비밀번호가 있으면 검증 후 해싱
+        if 'user_password' in update_dict and update_dict['user_password']:
+            if len(update_dict['user_password']) < 8:
+                raise HTTPException(
+                    status_code=400,
+                    detail="비밀번호는 8자 이상이어야 합니다."
+                )
+            update_dict['user_password'] = hash_password(update_dict['user_password'])
+
+        # 원본 데이터 저장 (응답용)
+        original_data = {
+            'user_email': user_info.user_email if user_info.user_email else None,
+            'user_name': user_info.user_name if user_info.user_name else None,
+            'contact': user_info.contact if user_info.contact else None
+        }
+
+        # 기존 레코드 업데이트
+        for field, value in update_dict.items():
+            if hasattr(existing_user, field):
+                setattr(existing_user, field, value)
+
+        # updated_at 필드가 있다면 현재 시간으로 설정
+        if hasattr(existing_user, 'updated_at'):
+            existing_user.updated_at = datetime.now()
+
+        db.commit()
+        db.refresh(existing_user)
+
+        # 업데이트된 데이터 반환 (복호화된 정보, 비밀번호 제외)
+        data = {
+            "user_no": existing_user.user_no,
+            "user_id": existing_user.user_id,
+            "user_email": original_data['user_email'],
+            "user_name": original_data['user_name'],
+            "contact": original_data['contact'],
+            "user_status_cd": existing_user.user_status_cd,
+            "updated_at": existing_user.updated_at,
+            "updated_fields": list(update_dict.keys())
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="사용자가 성공적으로 수정되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 수정 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def delete_user(
+        user_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """사용자 삭제 (물리적 삭제)"""
+    try:
+        current_user_no, company_no = get_authenticated_user_no(request)
+
+        # 본인 삭제 방지
+        if current_user_no == user_no:
+            raise HTTPException(
+                status_code=400,
+                detail="본인 계정은 삭제할 수 없습니다."
+            )
+
+        # 삭제할 사용자 찾기
+        user = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_no == user_no
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail=f"삭제할 수 없는 사용자입니다. (ID: {user_no})"
+            )
+
+        # 물리적 삭제
+        db.delete(user)
+        db.commit()
+
+        data = {
+            "user_no": user_no,
+            "deleted": True
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="사용자가 성공적으로 삭제되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 삭제 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def create_company(
+        company_info: CompanyBase,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """회사 생성"""
+    try:
+        current_user_no, _ = get_authenticated_user_no(request)
+
+        # 필수 필드 검증
+        if not company_info.company_name or not company_info.company_name.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="회사 이름은 필수 입력 항목입니다."
+            )
+
+        # 중복 체크 - company_name
+        existing_company_by_name = db.query(auth_models.ComCompany).filter(
+            auth_models.ComCompany.company_name == company_info.company_name.strip()
+        ).first()
+
+        if existing_company_by_name:
+            raise HTTPException(
+                status_code=400,
+                detail=f"이미 존재하는 회사명입니다: {company_info.company_name}"
+            )
+
+        # 쿠팡 벤더아이디 중복 체크 (있는 경우만)
+        if company_info.coupang_vendor_id and company_info.coupang_vendor_id.strip():
+            existing_vendor = db.query(auth_models.ComCompany).filter(
+                auth_models.ComCompany.coupang_vendor_id == company_info.coupang_vendor_id.strip()
+            ).first()
+
+            if existing_vendor:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 등록된 쿠팡 판매자코드입니다: {company_info.coupang_vendor_id}"
+                )
+
+        # Pydantic 모델을 dict로 변환
+        company_dict = company_info.dict(exclude_unset=True, exclude={'company_no', 'company_status_name'})
+
+        # 회사 상태 설정 (기본값)
+        if not company_dict.get('company_status_cd'):
+            company_dict['company_status_cd'] = 'ACTIVE'
+
+        # 새 회사 생성
+        new_company = auth_models.ComCompany(**company_dict)
+
+        db.add(new_company)
+        db.commit()
+        db.refresh(new_company)
+
+        # 응답 데이터
+        data = {
+            "company_no": new_company.company_no,
+            "company_name": new_company.company_name,
+            "coupang_vendor_id": new_company.coupang_vendor_id,
+            "business_registration_number": new_company.business_registration_number,
+            "company_status_cd": new_company.company_status_cd,
+            "address": new_company.address,
+            "address_dtl": new_company.address_dtl,
+            "created_at": new_company.created_at
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="회사가 성공적으로 등록되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 생성 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def fetch_company_list(
+        request: Request,
+        filter: CompanyFilterRequest,
+        db: Session = Depends(get_db),
+        pagination: PaginationRequest = Depends()
+) -> common_response.ApiResponse[Union[common_response.PageResponse[CompanyBase], None]]:
+    """회사 목록 조회"""
+    try:
+        # 회사 상태 공통코드 미리 조회
+        company_status_codes = com_code_util.get_com_code_dict_by_parent_code("COMPANY_STATUS_CD", db)
+
+        # 기본 쿼리
+        query = db.query(auth_models.ComCompany)
+
+        # CompanyFilterRequest 조건 동적 적용 (LIKE 검색)
+        if filter.company_name:
+            query = query.filter(auth_models.ComCompany.company_name.like(f"%{filter.company_name.strip()}%"))
+
+        if filter.coupang_vendor_id:
+            query = query.filter(auth_models.ComCompany.coupang_vendor_id.like(f"%{filter.coupang_vendor_id.strip()}%"))
+
+        if filter.business_registration_number:
+            query = query.filter(auth_models.ComCompany.business_registration_number.like(f"%{filter.business_registration_number.strip()}%"))
+
+        if filter.company_status_cd:
+            query = query.filter(auth_models.ComCompany.company_status_cd == filter.company_status_cd)
+
+        # 정렬 (최신 순)
+        query = query.order_by(desc(auth_models.ComCompany.company_no))
+
+        # 전체 개수 계산
+        count_query = db.query(auth_models.ComCompany)
+
+        if filter.company_name:
+            count_query = count_query.filter(auth_models.ComCompany.company_name.like(f"%{filter.company_name.strip()}%"))
+
+        if filter.coupang_vendor_id:
+            count_query = count_query.filter(auth_models.ComCompany.coupang_vendor_id.like(f"%{filter.coupang_vendor_id.strip()}%"))
+
+        if filter.business_registration_number:
+            count_query = count_query.filter(auth_models.ComCompany.business_registration_number.like(f"%{filter.business_registration_number.strip()}%"))
+
+        if filter.company_status_cd:
+            count_query = count_query.filter(auth_models.ComCompany.company_status_cd == filter.company_status_cd)
+
+        total_elements = count_query.count()
+
+        # 페이징
+        offset = (pagination.page - 1) * pagination.size
+        results = query.offset(offset).limit(pagination.size).all()
+
+        # 결과를 딕셔너리 리스트로 변환
+        company_list = []
+        for company in results:
+            # 회사 상태 코드명 변환
+            company_status_name = None
+            if company.company_status_cd and company_status_codes:
+                status_code = company_status_codes.get(company.company_status_cd)
+                if status_code:
+                    company_status_name = status_code.code_name
+
+            company_dict = {
+                "company_no": company.company_no,
+                "company_name": company.company_name,
+                "coupang_vendor_id": company.coupang_vendor_id,
+                "business_registration_number": company.business_registration_number,
+                "company_status_cd": company.company_status_cd,
+                "company_status_name": company_status_name,  # 상태 코드명 추가
+                "address": company.address,
+                "address_dtl": company.address_dtl,
+                "created_at": company.created_at,
+                "updated_at": company.updated_at
+            }
+            company_list.append(company_dict)
+
+        return common_response.ResponseBuilder.paged_success(
+            content=company_list,
+            page=pagination.page,
+            size=pagination.size,
+            total_elements=total_elements
+        )
+
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def fetch_company(
+        company_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """회사 상세 조회"""
+    try:
+        # 회사 조회
+        company = db.query(auth_models.ComCompany).filter(
+            auth_models.ComCompany.company_no == company_no
+        ).first()
+
+        if not company:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ID {company_no}에 해당하는 회사를 찾을 수 없습니다."
+            )
+
+        # 회사 데이터를 dict로 변환
+        data = {
+            "company_no": company.company_no,
+            "company_name": company.company_name,
+            "coupang_vendor_id": company.coupang_vendor_id,
+            "business_registration_number": company.business_registration_number,
+            "company_status_cd": company.company_status_cd,
+            "address": company.address,
+            "address_dtl": company.address_dtl,
+            "created_at": company.created_at,
+            "updated_at": company.updated_at
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="회사 상세 조회가 완료되었습니다."
+        )
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def update_company(
+        company_info: CompanyBase,
+        company_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """회사 수정"""
+    try:
+        # 업데이트할 회사 찾기
+        existing_company = db.query(auth_models.ComCompany).filter(
+            auth_models.ComCompany.company_no == company_no
+        ).first()
+
+        if not existing_company:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ID {company_no}에 해당하는 회사를 찾을 수 없습니다."
+            )
+
+        # Pydantic 모델을 dict로 변환 (None 값 제외)
+        update_dict = company_info.dict(exclude_unset=True, exclude={'company_no', 'company_status_name'})
+
+        # 업데이트할 필드가 있는지 확인
+        if not update_dict:
+            raise HTTPException(
+                status_code=400,
+                detail="업데이트할 필드가 없습니다."
+            )
+
+        # company_name 중복 체크 (자기 자신 제외)
+        if 'company_name' in update_dict:
+            duplicate_company = db.query(auth_models.ComCompany).filter(
+                auth_models.ComCompany.company_name == update_dict['company_name'],
+                auth_models.ComCompany.company_no != company_no
+            ).first()
+
+            if duplicate_company:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 존재하는 회사명입니다: {update_dict['company_name']}"
+                )
+
+        # coupang_vendor_id 중복 체크 (자기 자신 제외, 값이 있는 경우만)
+        if 'coupang_vendor_id' in update_dict and update_dict['coupang_vendor_id']:
+            duplicate_vendor = db.query(auth_models.ComCompany).filter(
+                auth_models.ComCompany.coupang_vendor_id == update_dict['coupang_vendor_id'],
+                auth_models.ComCompany.company_no != company_no
+            ).first()
+
+            if duplicate_vendor:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"이미 등록된 쿠팡 판매자코드입니다: {update_dict['coupang_vendor_id']}"
+                )
+
+        # 기존 레코드 업데이트
+        for field, value in update_dict.items():
+            if hasattr(existing_company, field):
+                setattr(existing_company, field, value)
+
+        # updated_at 필드가 있다면 현재 시간으로 설정
+        if hasattr(existing_company, 'updated_at'):
+            existing_company.updated_at = datetime.now()
+
+        db.commit()
+        db.refresh(existing_company)
+
+        # 업데이트된 데이터 반환
+        data = {
+            "company_no": existing_company.company_no,
+            "company_name": existing_company.company_name,
+            "coupang_vendor_id": existing_company.coupang_vendor_id,
+            "business_registration_number": existing_company.business_registration_number,
+            "company_status_cd": existing_company.company_status_cd,
+            "address": existing_company.address,
+            "address_dtl": existing_company.address_dtl,
+            "updated_at": existing_company.updated_at,
+            "updated_fields": list(update_dict.keys())
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="회사가 성공적으로 수정되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 수정 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def delete_company(
+        company_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """회사 삭제 (물리적 삭제)"""
+    try:
+        # 삭제할 회사 찾기
+        company = db.query(auth_models.ComCompany).filter(
+            auth_models.ComCompany.company_no == company_no
+        ).first()
+
+        if not company:
+            raise HTTPException(
+                status_code=400,
+                detail=f"삭제할 수 없는 회사입니다. (ID: {company_no})"
+            )
+
+        # 해당 회사에 속한 사용자가 있는지 확인
+        user_count = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.company_no == company_no
+        ).count()
+
+        if user_count > 0:
+            raise HTTPException(
+                status_code=400,
+                detail=f"해당 회사에 속한 사용자({user_count}명)가 있어 삭제할 수 없습니다. 먼저 사용자를 삭제하거나 다른 회사로 이동시켜주세요."
+            )
+
+        # 물리적 삭제
+        db.delete(company)
+        db.commit()
+
+        data = {
+            "company_no": company_no,
+            "deleted": True
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="회사가 성공적으로 삭제되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"회사 삭제 중 오류가 발생했습니다: {str(e)}"
         )
