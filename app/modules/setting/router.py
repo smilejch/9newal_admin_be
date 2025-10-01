@@ -131,12 +131,11 @@ def create_user(
 # 사용자 목록 조회 (페이지네이션 및 필터링)
 @setting_router.post("/users/search")
 def fetch_user_list(
-    request: Request,
     filter: UserFilterRequest,
     db: Session = Depends(get_db),
     pagination: PaginationRequest = Depends()
 ) -> ApiResponse[PageResponse[UserBase]]:
-    return setting_service.fetch_user_list(request, filter, db, pagination)
+    return setting_service.fetch_user_list(filter, db, pagination)
 
 
 # 사용자 상세 조회
