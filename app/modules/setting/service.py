@@ -2050,6 +2050,7 @@ def fetch_company_list(
     """회사 목록 조회"""
     try:
         # 회사 상태 공통코드 미리 조회
+        platform_type_codes = com_code_util.get_com_code_dict_by_parent_code("PLATFORM_TYPE_CD", db)
         company_status_codes = com_code_util.get_com_code_dict_by_parent_code("COMPANY_STATUS_CD", db)
 
         # 기본 쿼리
@@ -2105,6 +2106,12 @@ def fetch_company_list(
                 if status_code:
                     company_status_name = status_code.code_name
 
+            platform_type_name = None
+            if company.platform_type_cd and platform_type_codes:
+                platform_type_code = platform_type_codes.get(company.platform_type_cd)
+                if platform_type_code:
+                    platform_type_name = platform_type_code.code_name
+
             company_dict = {
                 "company_no": company.company_no,
                 "company_name": company.company_name,
@@ -2112,6 +2119,8 @@ def fetch_company_list(
                 "business_registration_number": company.business_registration_number,
                 "company_status_cd": company.company_status_cd,
                 "company_status_name": company_status_name,  # 상태 코드명 추가
+                "platform_type_cd": company.platform_type_cd,  # 상태 코드명 추가
+                "platform_type_name": platform_type_name,  # 상태 코드명 추가
                 "address": company.address,
                 "address_dtl": company.address_dtl,
                 "created_at": company.created_at,
@@ -2159,6 +2168,7 @@ def fetch_company(
             "coupang_vendor_id": company.coupang_vendor_id,
             "business_registration_number": company.business_registration_number,
             "company_status_cd": company.company_status_cd,
+            "platform_type_cd": company.platform_type_cd,
             "address": company.address,
             "address_dtl": company.address_dtl,
             "created_at": company.created_at,

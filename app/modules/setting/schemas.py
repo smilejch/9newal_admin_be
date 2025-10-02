@@ -109,6 +109,8 @@ class CompanyBase(BaseModel):
     business_registration_number: Optional[str] = None
     company_status_cd: Optional[str] = None
     company_status_name: Optional[str] = None  # 조회 시에만 사용
+    platform_type_cd: Optional[str] = None  # 조회 시에만 사용
+    platform_type_name: Optional[str] = None  # 조회 시에만 사용
     address: Optional[str] = None
     address_dtl: Optional[str] = None
     created_at: Optional[datetime] = None
