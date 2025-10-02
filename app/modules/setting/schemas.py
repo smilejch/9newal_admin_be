@@ -7,7 +7,7 @@ from datetime import datetime
 
 class SkuBase(BaseModel):
     """SKU 기본 스키마"""
-    sku_no: Optional[int] | str = None
+    sku_no: Optional[Union[int,str]] = None
     sku_id: str
     exposure_id: Optional[str] = None
     bundle: Optional[Union[str, int]] = None
@@ -80,6 +80,9 @@ class UserBase(BaseModel):
     contact: Optional[str] = None
     user_status_cd: Optional[str] = None
     user_status_name: Optional[str] = None
+    user_role_cd: Optional[str] = None
+    user_role_name: Optional[str] = None
+    approval_yn: Optional[int] = None
     company_no: Optional[int] = None
     company_name: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -96,7 +99,7 @@ class UserFilterRequest(BaseModel):
     user_email: Optional[str] = None
     contact: Optional[str] = None
     user_status_cd: Optional[str] = None
-    company_no: Optional[List[int]] = None  # 회사 번호 배열 추가
+    company_no: Optional[List[int]] = None
 
 class CompanyBase(BaseModel):
     """회사 기본 스키마"""
@@ -120,4 +123,5 @@ class CompanyFilterRequest(BaseModel):
     company_name: Optional[str] = None
     coupang_vendor_id: Optional[str] = None
     business_registration_number: Optional[str] = None
+    address: Optional[str] = None
     company_status_cd: Optional[str] = None

@@ -102,6 +102,13 @@ def login_user(
         auth_models.ComUser.user_id == login_data.user_id
     ).first()
 
+    # 관리자 권한 체크
+    if user.user_role_cd != 'ADMIN':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="관리자만 로그인할 수 있습니다."
+        )
+
     if not user or not verify_password(login_data.user_password, user.user_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -132,45 +139,14 @@ def login_user(
     except Exception as e:
         decrypted_user_name = "복호화 실패"
 
-    # 회사 정보 가져오기
-    active_companies = [
-        {"company_no": c.company_no, "company_name": c.company_name, "company": c, "coupang_vendor_id": c.coupang_vendor_id}
-        for c in user.companies
-        if c.company_status_cd == 'ACTIVE'
-    ]
-
-    if not active_companies:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="업체 상태가 활성화되어 있지 않습니다. 관리자에게 문의하세요."
-        )
-
     main_company_info = None
     selected_company_no = user.company_no
-
-    if user.company_no:
-        main_company_info = next(
-            (ac["company"] for ac in active_companies if ac["company_no"] == user.company_no),
-            None
-        )
-
-    if not main_company_info:
-        main_company_info = active_companies[0]["company"]
-        selected_company_no = main_company_info.company_no
-
-    companies = [
-        {"company_no": ac["company_no"], "company_name": ac["company_name"], "coupang_vendor_id": ac["coupang_vendor_id"]}
-        for ac in active_companies
-    ]
 
     # JWT 페이로드의 정보로 새 액세스 토큰 생성
     token_data = {
         "user_no": user.user_no,
         "user_name": decrypted_user_name,
-        "company_no": selected_company_no,
-        "company_name": main_company_info.company_name,
-        "coupang_vendor_id": main_company_info.coupang_vendor_id,
-        "companies": companies
+        "company_no": selected_company_no
     }
 
     user_agent = request.headers.get("user-agent")

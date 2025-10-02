@@ -5,6 +5,7 @@ pydantic[email]
 python-dotenv
 python-jose[cryptography]
 passlib[bcrypt]
+bcrypt==4.1.3
 pymysql
 requests
 httpx

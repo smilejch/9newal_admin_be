@@ -218,3 +218,12 @@ def delete_company(
     db: Session = Depends(get_db)
 ) -> ApiResponse[dict]:
     return setting_service.delete_company(company_no, request, db)
+
+# 사용자 승인
+@setting_router.put("/users/{user_no}/approve")
+async def approve_user(
+    user_no: int = Path(...),
+    request: Request = None,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return await setting_service.approve_user(user_no, request, db)

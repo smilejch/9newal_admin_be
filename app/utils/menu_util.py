@@ -10,23 +10,23 @@ def build_menu_tree(db: Session, user_no: int, company_no: int) -> List[Dict[str
 
     # 사용자 메뉴 권한 조회
     menu_no_sel = (
-        select(models.ComUserMenu.menu_no)
+        select(models.AdminComUserMenu.menu_no)
         .where(
-            models.ComUserMenu.user_no == user_no,
-            models.ComUserMenu.company_no == company_no
+            models.AdminComUserMenu.user_no == user_no,
+            models.AdminComUserMenu.company_no == company_no
         )
     )
 
     # 권한 메뉴 + Dashboard 조회
     menu_list = (
-        db.query(models.ComMenu)
+        db.query(models.AdminComMenu)
         .filter(
             or_(
-                models.ComMenu.menu_no.in_(menu_no_sel),
-                models.ComMenu.menu_name == "Dashboard"
+                models.AdminComMenu.menu_no.in_(menu_no_sel),
+                models.AdminComMenu.menu_name == "Dashboard"
             )
         )
-        .order_by(models.ComMenu.order_no)
+        .order_by(models.AdminComMenu.order_no)
         .distinct()
         .all()
     )

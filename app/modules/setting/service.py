@@ -3,6 +3,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import desc, or_
 from app.utils import file_util, com_code_util
 from app.utils import crypto_util
+from app.utils import  email_util
 from app.core.security import hash_password
 import pandas as pd
 
@@ -1429,7 +1430,7 @@ def create_user(
                 detail=f"이미 사용중인 아이디입니다: {user_info.user_id}"
             )
 
-        # 중복 체크 - user_email (암호화된 이메일과 비교를 위해 모든 사용자 조회)
+        # 중복 체크 - user_email
         encrypted_input_email = crypto_util.encrypt(str(user_info.user_email).strip())
 
         existing_user_by_email = db.query(auth_models.ComUser).filter(
@@ -1443,7 +1444,8 @@ def create_user(
             )
 
         # Pydantic 모델을 dict로 변환
-        user_dict = user_info.dict(exclude_unset=True, exclude={'user_no'})
+        user_dict = user_info.dict(exclude_unset=True,
+                                   exclude={'user_no', 'company_name', 'user_status_name', 'user_role_name'})
 
         # 개인정보 암호화
         encrypted_name = crypto_util.encrypt(user_info.user_name.strip())
@@ -1466,24 +1468,71 @@ def create_user(
 
         # 사용자 상태 설정 (기본값)
         if not user_dict.get('user_status_cd'):
-            user_dict['user_status_cd'] = 'ACTIVE'
+            user_dict['user_status_cd'] = 'PENDING'
+
+        # 관리자 페이지에서 만든 사용자는 바로 승인
+        user_dict["approval_yn"] = 1
 
         # 새 사용자 생성
         new_user = auth_models.ComUser(**user_dict)
 
         db.add(new_user)
+        db.flush()  # user_no를 얻기 위해 flush
+
+        # ComUserCompany에 레코드 추가
+        if new_user.company_no:
+            new_user_company = auth_models.ComUserCompany(
+                user_no=new_user.user_no,
+                company_no=new_user.company_no
+            )
+            db.add(new_user_company)
+
+        # 회사 정보 조회 및 메뉴 설정
+        platform_type_cd = None
+        added_menus_count = 0
+
+        if new_user.company_no:
+            company = db.query(auth_models.ComCompany).filter(
+                auth_models.ComCompany.company_no == new_user.company_no
+            ).first()
+
+            if company and hasattr(company, 'platform_type_cd'):
+                platform_type_cd = company.platform_type_cd
+
+            # 메뉴 조회 (basic_yn = 1 또는 platform_type_cd 매칭)
+            menu_query = db.query(auth_models.ComMenu).filter(
+                or_(
+                    auth_models.ComMenu.basic_yn == 1,
+                    auth_models.ComMenu.platform_type_cd == platform_type_cd if platform_type_cd else False
+                )
+            )
+
+            menus = menu_query.all()
+
+            # 사용자 메뉴 등록
+            for menu in menus:
+                new_user_menu = auth_models.ComUserMenu(
+                    user_no=new_user.user_no,
+                    menu_no=menu.menu_no,
+                    company_no=new_user.company_no
+                )
+                db.add(new_user_menu)
+                added_menus_count += 1
+
         db.commit()
         db.refresh(new_user)
 
-        # 응답 데이터 (복호화된 정보로 반환, 비밀번호 제외)
+        # 응답 데이터
         data = {
             "user_no": new_user.user_no,
             "user_id": new_user.user_id,
-            "user_email": user_info.user_email,  # 원본 이메일
-            "user_name": user_info.user_name,  # 원본 이름
-            "contact": user_info.contact,  # 원본 연락처
+            "user_email": user_info.user_email,
+            "user_name": user_info.user_name,
+            "contact": user_info.contact,
             "user_status_cd": new_user.user_status_cd,
             "company_no": new_user.company_no,
+            "platform_type_cd": platform_type_cd,
+            "added_menus_count": added_menus_count,
             "created_at": new_user.created_at
         }
 
@@ -1511,6 +1560,7 @@ def fetch_user_list(
     try:
         # 사용자 상태 공통코드 미리 조회
         user_status_codes = com_code_util.get_com_code_dict_by_parent_code("USER_STATUS_CD", db)
+        user_role_codes = com_code_util.get_com_code_dict_by_parent_code("USER_ROLE_CD", db)
 
         # 기본 쿼리 (회사 정보 JOIN 추가)
         query = db.query(
@@ -1549,6 +1599,10 @@ def fetch_user_list(
         if filter.user_status_cd:
             count_query = count_query.filter(auth_models.ComUser.user_status_cd == filter.user_status_cd)
 
+        # company_no 필터 적용 (리스트가 비어있지 않은 경우)
+        if filter.company_no and len(filter.company_no) > 0:
+            query = query.filter(auth_models.ComUser.company_no.in_(filter.company_no))
+
         total_elements = count_query.count()
 
         # 페이징
@@ -1574,6 +1628,13 @@ def fetch_user_list(
                 if status_code:
                     user_status_name = status_code.code_name
 
+            # 사용자 권한 코드명 변환
+            user_role_name = None
+            if user.user_role_cd and user_role_codes:
+                role_code = user_role_codes.get(user.user_role_cd)
+                if role_code:
+                    user_role_name = role_code.code_name
+
             user_dict = {
                 "user_no": user.user_no,
                 "user_id": user.user_id,
@@ -1581,7 +1642,10 @@ def fetch_user_list(
                 "user_name": decrypted_name,
                 "contact": decrypted_contact,
                 "user_status_cd": user.user_status_cd,
-                "user_status_name": user_status_name,  # 상태 코드명 추가
+                "user_status_name": user_status_name,
+                "user_role_cd": user.user_role_cd,
+                "user_role_name": user_role_name,
+                "approval_yn": user.approval_yn,
                 "company_no": user.company_no,
                 "company_name": company_name,
                 "created_at": user.created_at,
@@ -1670,8 +1734,9 @@ def update_user(
                 detail=f"ID {user_no}에 해당하는 사용자를 찾을 수 없습니다."
             )
 
-        # Pydantic 모델을 dict로 변환 (None 값 제외)
-        update_dict = user_info.dict(exclude_unset=True, exclude={'user_no'})
+        # Pydantic 모델을 dict로 변환
+        update_dict = user_info.dict(exclude_unset=True,
+                                     exclude={'user_no', 'company_name', 'user_status_name', 'user_role_name'})
 
         # 업데이트할 필드가 있는지 확인
         if not update_dict:
@@ -1693,7 +1758,7 @@ def update_user(
                     detail=f"이미 사용중인 아이디입니다: {update_dict['user_id']}"
                 )
 
-        # user_email 중복 체크 (암호화 후 비교, 자기 자신 제외)
+        # user_email 중복 체크
         if 'user_email' in update_dict:
             encrypted_email = crypto_util.encrypt(update_dict['user_email'])
             duplicate_email = db.query(auth_models.ComUser).filter(
@@ -1707,7 +1772,6 @@ def update_user(
                     detail=f"이미 등록된 이메일입니다: {update_dict['user_email']}"
                 )
 
-            # 이메일 암호화
             update_dict['user_email'] = encrypted_email
 
         # 이름 암호화
@@ -1734,19 +1798,87 @@ def update_user(
             'contact': user_info.contact if user_info.contact else None
         }
 
+        # company_no 변경 체크
+        company_changed = False
+        old_company_no = existing_user.company_no
+        new_company_no = update_dict.get('company_no')
+
+        if 'company_no' in update_dict and old_company_no != new_company_no:
+            company_changed = True
+
         # 기존 레코드 업데이트
         for field, value in update_dict.items():
             if hasattr(existing_user, field):
                 setattr(existing_user, field, value)
 
-        # updated_at 필드가 있다면 현재 시간으로 설정
+        # updated_at 필드 업데이트
         if hasattr(existing_user, 'updated_at'):
             existing_user.updated_at = datetime.now()
+
+        # company_no가 변경된 경우
+        platform_type_cd = None
+        added_menus_count = 0
+
+        if company_changed:
+            # 기존 ComUserCompany 레코드 삭제
+            if old_company_no:
+                db.query(auth_models.ComUserCompany).filter(
+                    auth_models.ComUserCompany.user_no == user_no,
+                    auth_models.ComUserCompany.company_no == old_company_no
+                ).delete()
+
+            # 기존 ComUserMenu 레코드 삭제 (모든 메뉴 권한 삭제)
+            db.query(auth_models.ComUserMenu).filter(
+                auth_models.ComUserMenu.user_no == user_no
+            ).delete()
+
+            # 새 ComUserCompany 레코드 추가
+            if new_company_no:
+                # 중복 체크
+                existing_user_company = db.query(auth_models.ComUserCompany).filter(
+                    auth_models.ComUserCompany.user_no == user_no,
+                    auth_models.ComUserCompany.company_no == new_company_no
+                ).first()
+
+                if not existing_user_company:
+                    new_user_company = auth_models.ComUserCompany(
+                        user_no=user_no,
+                        company_no=new_company_no
+                    )
+                    db.add(new_user_company)
+
+                # 새 회사 정보 조회
+                company = db.query(auth_models.ComCompany).filter(
+                    auth_models.ComCompany.company_no == new_company_no
+                ).first()
+
+                if company and hasattr(company, 'platform_type_cd'):
+                    platform_type_cd = company.platform_type_cd
+
+                # 메뉴 조회 (basic_yn = 1 또는 platform_type_cd 매칭)
+                menu_query = db.query(auth_models.ComMenu).filter(
+                    or_(
+                        auth_models.ComMenu.basic_yn == 1,
+                        auth_models.ComMenu.platform_type_cd == platform_type_cd if platform_type_cd else False
+                    )
+                )
+
+                menus = menu_query.all()
+
+                # 새 사용자 메뉴 등록
+                for menu in menus:
+                    new_user_menu = auth_models.ComUserMenu(
+                        user_no=user_no,
+                        menu_no=menu.menu_no,
+                        company_no=new_company_no
+                    )
+                    db.add(new_user_menu)
+                    added_menus_count += 1
 
         db.commit()
         db.refresh(existing_user)
 
-        # 업데이트된 데이터 반환 (복호화된 정보, 비밀번호 제외)
+        # 업데이트된 데이터 반환
         data = {
             "user_no": existing_user.user_no,
             "user_id": existing_user.user_id,
@@ -1754,6 +1886,10 @@ def update_user(
             "user_name": original_data['user_name'],
             "contact": original_data['contact'],
             "user_status_cd": existing_user.user_status_cd,
+            "company_no": existing_user.company_no,
+            "company_changed": company_changed,
+            "platform_type_cd": platform_type_cd if company_changed else None,
+            "added_menus_count": added_menus_count if company_changed else 0,
             "updated_at": existing_user.updated_at,
             "updated_fields": list(update_dict.keys())
         }
@@ -1928,6 +2064,9 @@ def fetch_company_list(
 
         if filter.business_registration_number:
             query = query.filter(auth_models.ComCompany.business_registration_number.like(f"%{filter.business_registration_number.strip()}%"))
+
+        if filter.address:
+            query = query.filter(auth_models.ComCompany.address.like(f"%{filter.address.strip()}%"))
 
         if filter.company_status_cd:
             query = query.filter(auth_models.ComCompany.company_status_cd == filter.company_status_cd)
@@ -2185,4 +2324,178 @@ def delete_company(
         raise HTTPException(
             status_code=400,
             detail=f"회사 삭제 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+async def approve_user(
+        user_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+) -> common_response.ApiResponse[Union[dict, None]]:
+    """사용자 승인"""
+    try:
+        current_user_no, _ = get_authenticated_user_no(request)
+
+        # 승인할 사용자 찾기
+        user = db.query(auth_models.ComUser).filter(
+            auth_models.ComUser.user_no == user_no
+        ).first()
+
+        if not user:
+            raise HTTPException(
+                status_code=400,
+                detail=f"ID {user_no}에 해당하는 사용자를 찾을 수 없습니다."
+            )
+
+        # 이미 승인된 사용자인지 확인
+        if hasattr(user, 'approval_yn') and user.approval_yn == 1:
+            raise HTTPException(
+                status_code=400,
+                detail="이미 승인된 사용자입니다."
+            )
+
+        # 사용자 이메일 복호화
+        decrypted_email = None
+        if user.user_email:
+            decrypted_email = crypto_util.decrypt(user.user_email)
+
+        # 1. 사용자 승인 처리
+        if hasattr(user, 'approval_yn'):
+            user.approval_yn = 1
+        user.user_status_cd = 'ACTIVE'
+        user.updated_at = datetime.now()
+
+        # 2. 회사 정보 조회 및 상태 활성화
+        company = None
+        platform_type_cd = None
+
+        if user.company_no:
+            company = db.query(auth_models.ComCompany).filter(
+                auth_models.ComCompany.company_no == user.company_no
+            ).first()
+
+            if company:
+                company.company_status_cd = 'ACTIVE'
+                company.updated_at = datetime.now()
+
+                # 회사의 platform_type_cd 가져오기
+                if hasattr(company, 'platform_type_cd'):
+                    platform_type_cd = company.platform_type_cd
+
+            # 3. COM_USER_COMPANY에 데이터 추가 (중복 체크)
+            existing_user_company = db.query(auth_models.ComUserCompany).filter(
+                auth_models.ComUserCompany.user_no == user_no,
+                auth_models.ComUserCompany.company_no == user.company_no
+            ).first()
+
+            if not existing_user_company:
+                new_user_company = auth_models.ComUserCompany(
+                    user_no=user_no,
+                    company_no=user.company_no
+                )
+                db.add(new_user_company)
+
+        # 4. 메뉴 조회
+        # 조건 1: basic_yn = 1인 기본 메뉴
+        # 조건 2: platform_type_cd가 회사의 platform_type_cd와 일치하는 메뉴
+        menu_query = db.query(auth_models.ComMenu).filter(
+            or_(
+                auth_models.ComMenu.basic_yn == 1,
+                auth_models.ComMenu.platform_type_cd == platform_type_cd if platform_type_cd else False
+            )
+        )
+
+        menus = menu_query.all()
+
+        # 5. 사용자 메뉴 등록
+        added_menus = []
+        for menu in menus:
+            # 중복 체크
+            existing_user_menu = db.query(auth_models.ComUserMenu).filter(
+                auth_models.ComUserMenu.user_no == user_no,
+                auth_models.ComUserMenu.menu_no == menu.menu_no
+            ).first()
+
+            # 중복되지 않은 경우만 추가
+            if not existing_user_menu:
+                new_user_menu = auth_models.ComUserMenu(
+                    user_no=user_no,
+                    menu_no=menu.menu_no,
+                    company_no=user.company_no
+                )
+                db.add(new_user_menu)
+                added_menus.append({
+                    "menu_no": menu.menu_no,
+                    "menu_name": menu.menu_name,
+                    "path": menu.path,
+                    "platform_type_cd": menu.platform_type_cd,
+                    "is_basic": menu.basic_yn == 1
+                })
+
+        # 커밋
+        db.commit()
+        db.refresh(user)
+
+        # 6. 승인 이메일 발송
+        email_sent = False
+        if decrypted_email:
+            try:
+                email_subject = "[9NEWALL] 회원 가입 승인 완료"
+                email_content = f"""
+                    안녕하세요, {user.user_id}님.
+                    
+                    9NEWALL 회원 가입이 승인되었습니다.
+                    
+                    이제 로그인하여 서비스를 이용하실 수 있습니다.
+                    
+                    승인 일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}
+                    사용자 ID: {user.user_id}
+                    회사명: {company.company_name if company else 'N/A'}
+                    
+                    서비스 이용에 문제가 있으시면 언제든지 문의해 주세요.
+                    
+                    감사합니다.
+                    
+                    9NEWALL 팀 드림
+                """
+
+                email_sent = await email_util.send_email(
+                    email_to=[decrypted_email],
+                    subject=email_subject,
+                    content=email_content
+                )
+            except Exception as email_error:
+                print(f"이메일 발송 실패: {str(email_error)}")
+                # 이메일 발송 실패해도 승인은 완료
+
+        # 응답 데이터
+        data = {
+            "user_no": user.user_no,
+            "user_id": user.user_id,
+            "user_email": decrypted_email,
+            "user_status_cd": user.user_status_cd,
+            "approval_yn": getattr(user, 'approval_yn', None),
+            "company_no": user.company_no,
+            "company_status_cd": company.company_status_cd if company else None,
+            "platform_type_cd": platform_type_cd,
+            "user_company_linked": True,
+            "added_menus_count": len(added_menus),
+            "added_menus": added_menus,
+            "email_sent": email_sent,
+            "approved_at": datetime.now()
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=data,
+            message="사용자가 성공적으로 승인되었습니다."
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"사용자 승인 중 오류가 발생했습니다: {str(e)}"
         )
