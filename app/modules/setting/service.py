@@ -2472,17 +2472,7 @@ async def approve_user(
         data = {
             "user_no": user.user_no,
             "user_id": user.user_id,
-            "user_email": decrypted_email,
-            "user_status_cd": user.user_status_cd,
-            "approval_yn": getattr(user, 'approval_yn', None),
-            "company_no": user.company_no,
-            "company_status_cd": company.company_status_cd if company else None,
-            "platform_type_cd": platform_type_cd,
-            "user_company_linked": True,
-            "added_menus_count": len(added_menus),
-            "added_menus": added_menus,
-            "email_sent": email_sent,
-            "approved_at": datetime.now()
+            "user_email": decrypted_email
         }
 
         return common_response.ResponseBuilder.success(
