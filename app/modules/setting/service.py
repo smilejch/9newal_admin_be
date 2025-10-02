@@ -2437,36 +2437,36 @@ async def approve_user(
         db.refresh(user)
 
         # 6. 승인 이메일 발송
-        email_sent = False
-        if decrypted_email:
-            try:
-                email_subject = "[9NEWALL] 회원 가입 승인 완료"
-                email_content = f"""
-                    안녕하세요, {user.user_id}님.
-                    
-                    9NEWALL 회원 가입이 승인되었습니다.
-                    
-                    이제 로그인하여 서비스를 이용하실 수 있습니다.
-                    
-                    승인 일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}
-                    사용자 ID: {user.user_id}
-                    회사명: {company.company_name if company else 'N/A'}
-                    
-                    서비스 이용에 문제가 있으시면 언제든지 문의해 주세요.
-                    
-                    감사합니다.
-                    
-                    9NEWALL 팀 드림
-                """
-
-                email_sent = await email_util.send_email(
-                    email_to=[decrypted_email],
-                    subject=email_subject,
-                    content=email_content
-                )
-            except Exception as email_error:
-                print(f"이메일 발송 실패: {str(email_error)}")
-                # 이메일 발송 실패해도 승인은 완료
+        # email_sent = False
+        # if decrypted_email:
+        #     try:
+        #         email_subject = "[9NEWALL] 회원 가입 승인 완료"
+        #         email_content = f"""
+        #             안녕하세요, {user.user_id}님.
+        #
+        #             9NEWALL 회원 가입이 승인되었습니다.
+        #
+        #             이제 로그인하여 서비스를 이용하실 수 있습니다.
+        #
+        #             승인 일시: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M')}
+        #             사용자 ID: {user.user_id}
+        #             회사명: {company.company_name if company else 'N/A'}
+        #
+        #             서비스 이용에 문제가 있으시면 언제든지 문의해 주세요.
+        #
+        #             감사합니다.
+        #
+        #             9NEWALL 팀 드림
+        #         """
+        #
+        #         email_sent = await email_util.send_email(
+        #             email_to=[decrypted_email],
+        #             subject=email_subject,
+        #             content=email_content
+        #         )
+        #     except Exception as email_error:
+        #         print(f"이메일 발송 실패: {str(email_error)}")
+        #         # 이메일 발송 실패해도 승인은 완료
 
         # 응답 데이터
         data = {
