@@ -1,4 +1,4 @@
-from app.modules.purchase import schemas as growth_schemas
+from app.modules.purchase import schemas as purchase_schemas
 from fastapi import Depends, Request, UploadFile, status, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -24,11 +24,11 @@ from collections import defaultdict
 from app.modules.common import schemas as module_common_schemas
 
 def fetch_order_mst_list(
-    filter: growth_schemas.OrderMstFilterRequest,
+    filter: purchase_schemas.OrderMstFilterRequest,
     request: Request,
     pagination: common_schemas.PaginationRequest = Depends(),
     db: Session = Depends(get_db)
-) -> ApiResponse[Union[PageResponse[growth_schemas.OrderMstResponse], None]]:
+) -> ApiResponse[Union[PageResponse[purchase_schemas.OrderMstResponse], None]]:
 
     ComCode = common_models.ComCode
     ComCompany = auth_models.ComCompany
@@ -98,19 +98,19 @@ def fetch_order_mst_list(
 
     # 페이징
     offset = (pagination.page - 1) * pagination.size
-    growth_orders = query.offset(offset).limit(pagination.size).all()
+    orders = query.offset(offset).limit(pagination.size).all()
 
-    growth_order_list = []
+    order_list = []
 
-    for order, platform_type_name, order_mst_status_name, company_name in growth_orders:
-        order_data = growth_schemas.OrderMstResponse.from_orm(order)
+    for order, platform_type_name, order_mst_status_name, company_name in orders:
+        order_data = purchase_schemas.OrderMstResponse.from_orm(order)
         order_data.platform_type_name = platform_type_name
         order_data.order_mst_status_name = order_mst_status_name
         order_data.company_name = company_name
-        growth_order_list.append(order_data)
+        order_list.append(order_data)
 
     return ResponseBuilder.paged_success(
-        content=growth_order_list,
+        content=order_list,
         page=pagination.page,
         size=pagination.size,
         total_elements=total_elements
