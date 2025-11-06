@@ -9,7 +9,7 @@ from app.modules.auth.router import auth_router
 from app.modules.dashboard.router import dashboard_router
 from app.modules.setting.router import setting_router
 from app.modules.common.router import common_router
-from app.modules.rocket.router import rocket_router
+from app.modules.purchase.router import purchase_router
 from app.core.exceptions import setup_global_exception_handlers
 import platform
 import os
@@ -64,7 +64,7 @@ def create_app():
     app.include_router(dashboard_router, prefix="/dashboard", tags=["dashboard"])
     app.include_router(setting_router, prefix="/setting", tags=["setting"])
     app.include_router(common_router, prefix="/common", tags=["common"])
-    app.include_router(rocket_router, prefix="/rocket", tags=["rocket"])
+    app.include_router(purchase_router, prefix="/purchase", tags=["purchase"])
 
     return app
 
