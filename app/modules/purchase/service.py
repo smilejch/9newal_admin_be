@@ -1,8 +1,8 @@
 from app.modules.purchase import schemas as purchase_schemas
-from fastapi import Depends, Request, UploadFile, status, HTTPException
+from fastapi import Depends, Request, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
-from sqlalchemy import and_, func
+from sqlalchemy import and_
 from app.common import response as common_response
 from typing import Union, List
 from app.modules.purchase import models as purchase_models
@@ -12,16 +12,7 @@ from app.modules.auth import models as auth_models
 from app.modules.common import models as common_models
 from app.common.schemas import request as common_schemas
 from app.common.response import ApiResponse, PageResponse, ResponseBuilder
-from app.utils.auth_util import get_authenticated_user_no
-from app.utils import com_code_util, file_util
-from datetime import timedelta
-from app.utils import alibaba_1688_util
-from fastapi.responses import StreamingResponse
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from decimal import Decimal
-from collections import defaultdict
-from app.modules.common import schemas as module_common_schemas
+from app.utils import com_code_util
 
 def fetch_order_mst_list(
     filter: purchase_schemas.OrderMstFilterRequest,
@@ -681,4 +672,220 @@ def fetch_shipment_dtl_all_list(
         raise HTTPException(
             status_code=400,
             detail=f"쉽먼트 DTL 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+def fetch_shipment_estimate_product_list_all(
+        order_mst_no: Union[str, int],
+        request: Request,
+        pagination: common_schemas.PaginationRequest,
+        db: Session
+) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
+    """발주서 마스터 번호로 모든 견적 상품 정보 조회 (estimated_yn이 1인 모든 shipment의 견적 데이터)"""
+    try:
+        # 발주서 마스터 존재 확인
+        existing_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not existing_order_mst:
+            raise HTTPException(
+                status_code=400,
+                detail="해당 발주서를 찾을 수 없습니다.",
+            )
+
+        # center_name 서브쿼리
+        center_subquery = db.query(set_models.SetCenter.center_name).filter(
+            set_models.SetCenter.center_no == purchase_models.OrderShipmentMst.center_no,
+            set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 필요한 컬럼만 명시적으로 선택 (중복 컬럼은 label로 구분)
+        query = (db.query(
+            # EstimateProduct 컬럼
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_product_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no,
+            purchase_models.OrderShipmentEstimateProduct.company_no,
+            purchase_models.OrderShipmentEstimateProduct.center_no,
+            purchase_models.OrderShipmentEstimateProduct.sku_id,
+            purchase_models.OrderShipmentEstimateProduct.sku_name,
+            purchase_models.OrderShipmentEstimateProduct.bundle,
+            purchase_models.OrderShipmentEstimateProduct.purchase_quantity,
+            purchase_models.OrderShipmentEstimateProduct.product_unit_price,
+            purchase_models.OrderShipmentEstimateProduct.product_total_amount.label("product_product_total_amount"),
+            purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
+            purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_unit_price,
+            purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_total_amount,
+            purchase_models.OrderShipmentEstimateProduct.fail_yn,
+            purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),
+            purchase_models.OrderShipmentEstimateProduct.remark,
+            purchase_models.OrderShipmentEstimateProduct.platform_type_cd.label("product_platform_type_cd"),
+            purchase_models.OrderShipmentEstimateProduct.created_at.label("product_created_at"),
+            purchase_models.OrderShipmentEstimateProduct.created_by.label("product_created_by"),
+            purchase_models.OrderShipmentEstimateProduct.updated_at.label("product_updated_at"),
+            purchase_models.OrderShipmentEstimateProduct.updated_by.label("product_updated_by"),
+
+            # Estimate 컬럼
+            purchase_models.OrderShipmentEstimate.order_mst_no,
+            purchase_models.OrderShipmentEstimate.estimate_id,
+            purchase_models.OrderShipmentEstimate.estimate_date,
+            purchase_models.OrderShipmentEstimate.product_total_amount.label("estimate_product_total_amount"),
+            purchase_models.OrderShipmentEstimate.vinyl_total_amount,
+            purchase_models.OrderShipmentEstimate.box_total_amount,
+            purchase_models.OrderShipmentEstimate.estimate_total_amount,
+
+            # ShipmentMst 컬럼
+            purchase_models.OrderShipmentMst.inbound_id,
+            purchase_models.OrderShipmentMst.inbound_no,
+            purchase_models.OrderShipmentMst.display_center_name,
+            purchase_models.OrderShipmentMst.edd,
+            purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
+            purchase_models.OrderShipmentMst.estimated_yn,
+            center_subquery.label("center_name"),
+
+            # ShipmentDtl 컬럼 (선택적)
+            purchase_models.OrderShipmentDtl.order_number,
+            purchase_models.OrderShipmentDtl.sku_barcode,
+            purchase_models.OrderShipmentDtl.confirmed_quantity.label("dtl_confirmed_quantity"),
+            purchase_models.OrderShipmentDtl.shipped_quantity,
+            purchase_models.OrderShipmentDtl.link,
+            purchase_models.OrderShipmentDtl.option_type,
+            purchase_models.OrderShipmentDtl.option_value,
+            purchase_models.OrderShipmentDtl.length_mm,
+            purchase_models.OrderShipmentDtl.width_mm,
+            purchase_models.OrderShipmentDtl.height_mm,
+            purchase_models.OrderShipmentDtl.weight_g,
+            purchase_models.OrderShipmentDtl.coupang_option_name,
+            purchase_models.OrderShipmentDtl.coupang_product_id,
+            purchase_models.OrderShipmentDtl.coupang_option_id,
+            purchase_models.OrderShipmentDtl.transport_type,
+            purchase_models.OrderShipmentDtl.linked_open_uid,
+
+            # PackingDtl 컬럼
+            purchase_models.OrderShipmentPackingDtl.packing_quantity,
+            purchase_models.OrderShipmentPackingDtl.box_name
+        ).join(
+            purchase_models.OrderShipmentEstimate,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
+        ).join(
+            purchase_models.OrderShipmentMst,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no == purchase_models.OrderShipmentMst.order_shipment_mst_no
+        ).outerjoin(
+            purchase_models.OrderShipmentDtl,
+            and_(
+                purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no == purchase_models.OrderShipmentDtl.order_shipment_dtl_no,
+                purchase_models.OrderShipmentDtl.del_yn == 0
+            )
+        ).outerjoin(
+            purchase_models.OrderShipmentPackingDtl,
+            and_(
+                purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
+                purchase_models.OrderShipmentPackingDtl.del_yn == 0
+            )
+        ).filter(
+            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,  # ✅ order_mst_no로 필터링
+            purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
+            purchase_models.OrderShipmentEstimate.del_yn == 0,
+            purchase_models.OrderShipmentMst.del_yn == 0
+        ).order_by(
+            purchase_models.OrderShipmentMst.estimated_yn.desc(),  # estimated_yn 내림차순
+            purchase_models.OrderShipmentEstimateProduct.created_at.desc()
+        ))
+
+        # 전체 개수
+        total_elements = query.count()
+
+        # 페이징
+        offset = (pagination.page - 1) * pagination.size
+        results = query.offset(offset).limit(pagination.size).all()
+
+        # 결과 데이터 변환
+        estimate_product_list = []
+        for row in results:
+            combined_data = {
+                # 견적 상품 정보
+                "order_shipment_estimate_product_no": row.order_shipment_estimate_product_no,
+                "order_shipment_estimate_no": row.order_shipment_estimate_no,
+                "order_shipment_mst_no": row.order_shipment_mst_no,
+                "order_shipment_dtl_no": row.order_shipment_dtl_no,
+                "company_no": row.company_no,
+                "center_no": row.center_no,
+                "center_name": row.center_name,
+                "sku_id": row.sku_id,
+                "sku_name": row.sku_name,
+                "bundle": row.bundle,
+                "purchase_quantity": row.purchase_quantity,
+                "product_unit_price": float(row.product_unit_price) if row.product_unit_price else 0.0,
+                "product_product_total_amount": float(row.product_product_total_amount) if row.product_product_total_amount else 0.0,
+                "package_vinyl_spec_cd": row.package_vinyl_spec_cd,
+                "package_vinyl_spec_unit_price": float(row.package_vinyl_spec_unit_price) if row.package_vinyl_spec_unit_price else 0.0,
+                "package_vinyl_spec_total_amount": float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0,
+                "fail_yn": row.fail_yn,
+                "total_amount": float(row.product_total_amount) if row.product_total_amount else 0.0,
+                "remark": row.remark,
+                "platform_type_cd": row.product_platform_type_cd,
+
+                # 견적서 정보
+                "order_mst_no": row.order_mst_no,
+                "estimate_id": row.estimate_id,
+                "estimate_date": row.estimate_date,
+                "estimate_total_amount": float(row.estimate_total_amount) if row.estimate_total_amount else 0.0,
+                "estimate_product_total_amount": float(row.estimate_product_total_amount) if row.estimate_product_total_amount else 0.0,
+                "vinyl_total_amount": float(row.vinyl_total_amount) if row.vinyl_total_amount else 0.0,
+                "box_total_amount": float(row.box_total_amount) if row.box_total_amount else 0.0,
+
+                # 쉽먼트 MST 정보
+                "inbound_id": row.inbound_id,
+                "inbound_no": row.inbound_no,
+                "display_center_name": row.display_center_name,
+                "edd": row.edd,
+                "order_shipment_mst_status_cd": row.order_shipment_mst_status_cd,
+                "estimated_yn": row.estimated_yn,
+
+                # 쉽먼트 DTL 정보
+                "order_number": row.order_number if row.order_number else None,
+                "sku_barcode": row.sku_barcode if row.sku_barcode else None,
+                "confirmed_quantity": row.dtl_confirmed_quantity if row.dtl_confirmed_quantity else None,
+                "shipped_quantity": row.shipped_quantity if row.shipped_quantity else None,
+                "link": row.link if row.link else None,
+                "option_type": row.option_type if row.option_type else None,
+                "option_value": row.option_value if row.option_value else None,
+                "length_mm": float(row.length_mm) if row.length_mm else None,
+                "width_mm": float(row.width_mm) if row.width_mm else None,
+                "height_mm": float(row.height_mm) if row.height_mm else None,
+                "weight_g": float(row.weight_g) if row.weight_g else None,
+                "coupang_option_name": row.coupang_option_name if row.coupang_option_name else None,
+                "coupang_product_id": row.coupang_product_id if row.coupang_product_id else None,
+                "coupang_option_id": row.coupang_option_id if row.coupang_option_id else None,
+                "transport_type": row.transport_type if row.transport_type else None,
+                "linked_open_uid": row.linked_open_uid if row.linked_open_uid else None,
+
+                # Packing 정보
+                "packing_quantity": row.packing_quantity if row.packing_quantity else None,
+                "box_name": row.box_name if row.box_name else None,
+
+                # 생성/수정 정보
+                "created_at": row.product_created_at,
+                "created_by": row.product_created_by,
+                "updated_at": row.product_updated_at,
+                "updated_by": row.product_updated_by
+            }
+            estimate_product_list.append(combined_data)
+
+        return ResponseBuilder.paged_success(
+            content=estimate_product_list,
+            page=pagination.page,
+            size=pagination.size,
+            total_elements=total_elements
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"견적 상품 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )

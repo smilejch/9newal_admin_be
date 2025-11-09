@@ -54,11 +54,21 @@ def fetch_shipment_dtl_list(
 
 
 @purchase_router.get("/shipments/{shipment_mst_no}/estimate-products")
-async def get_shipment_estimate_products(
+async def fetch_shipment_estimate_products(
         shipment_mst_no: int,
         request: Request,
         pagination: common_schemas.PaginationRequest = Depends(),
         db: Session = Depends(get_db)
 ):
     return purchase_service.fetch_shipment_estimate_product_list(shipment_mst_no, request, pagination, db)
+
+@purchase_router.get("/shipments/{order_mst_no}/estimate-products-all")
+async def fetch_shipment_estimate_products_all(
+        order_mst_no: int,
+        request: Request,
+        pagination: common_schemas.PaginationRequest = Depends(),
+        db: Session = Depends(get_db)
+):
+    return purchase_service.fetch_shipment_estimate_product_list_all(order_mst_no, request, pagination, db)
+
 
