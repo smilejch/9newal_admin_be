@@ -205,6 +205,7 @@ class OrderShipmentEstimate(Base):
     box_total_amount = Column(DECIMAL(14, 2), nullable=True, default=0.00, comment='박스 총액')
     estimate_total_amount = Column(DECIMAL(14, 2), nullable=False, default=0.00, comment='견적 총 금액')
     platform_type_cd = Column(String(50), comment="플랫폼 구분(ROCKET : 로켓, GROWTH : 그로스)")
+    deposit_yn = Column(Integer, nullable=False, default=0, comment='입금확인여부(0:미확인, 1:확인)')
     del_yn = Column(Integer, nullable=False, default=0, comment='삭제여부(0:미삭제, 1:삭제)')
     created_at = Column(DateTime, nullable=False, default=func.now(), comment='생성일시')
     created_by = Column(Integer, nullable=False, comment='생성자ID')

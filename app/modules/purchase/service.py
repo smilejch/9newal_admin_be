@@ -12,6 +12,8 @@ from app.modules.auth import models as auth_models
 from app.modules.common import models as common_models
 from app.common.schemas import request as common_schemas
 from app.common.response import ApiResponse, PageResponse, ResponseBuilder
+from app.utils.auth_util import get_authenticated_user_no
+from sqlalchemy import func
 from app.utils import com_code_util
 
 def fetch_order_mst_list(
@@ -674,7 +676,6 @@ def fetch_shipment_dtl_all_list(
             detail=f"쉽먼트 DTL 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
 
-
 def fetch_shipment_estimate_product_list_all(
         order_mst_no: Union[str, int],
         request: Request,
@@ -699,6 +700,22 @@ def fetch_shipment_estimate_product_list_all(
         center_subquery = db.query(set_models.SetCenter.center_name).filter(
             set_models.SetCenter.center_no == purchase_models.OrderShipmentMst.center_no,
             set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 쉽먼트 상태명 서브쿼리
+        shipment_status_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
+            common_models.ComCode.parent_com_code == 'ORDER_SHIPMENT_MST_STATUS_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
+        # 포장비닐 사양명 서브쿼리
+        vinyl_spec_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
+            common_models.ComCode.parent_com_code == 'PACKAGE_VINYL_SPEC_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
         ).scalar_subquery()
 
         # 필요한 컬럼만 명시적으로 선택 (중복 컬럼은 label로 구분)
@@ -745,6 +762,8 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
             purchase_models.OrderShipmentMst.estimated_yn,
             center_subquery.label("center_name"),
+            shipment_status_subquery.label("order_shipment_mst_status_name"),  # ✅ 상태명 추가
+            vinyl_spec_subquery.label("package_vinyl_spec_name"),  # ✅ 포장비닐 사양명 추가
 
             # ShipmentDtl 컬럼 (선택적)
             purchase_models.OrderShipmentDtl.order_number,
@@ -786,12 +805,12 @@ def fetch_shipment_estimate_product_list_all(
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
             )
         ).filter(
-            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,  # ✅ order_mst_no로 필터링
+            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,
             purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
             purchase_models.OrderShipmentEstimate.del_yn == 0,
             purchase_models.OrderShipmentMst.del_yn == 0
         ).order_by(
-            purchase_models.OrderShipmentMst.estimated_yn.desc(),  # estimated_yn 내림차순
+            purchase_models.OrderShipmentMst.estimated_yn.desc(),
             purchase_models.OrderShipmentEstimateProduct.created_at.desc()
         ))
 
@@ -821,6 +840,7 @@ def fetch_shipment_estimate_product_list_all(
                 "product_unit_price": float(row.product_unit_price) if row.product_unit_price else 0.0,
                 "product_product_total_amount": float(row.product_product_total_amount) if row.product_product_total_amount else 0.0,
                 "package_vinyl_spec_cd": row.package_vinyl_spec_cd,
+                "package_vinyl_spec_name": row.package_vinyl_spec_name,  # ✅ 포장비닐 사양명 추가
                 "package_vinyl_spec_unit_price": float(row.package_vinyl_spec_unit_price) if row.package_vinyl_spec_unit_price else 0.0,
                 "package_vinyl_spec_total_amount": float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0,
                 "fail_yn": row.fail_yn,
@@ -843,6 +863,7 @@ def fetch_shipment_estimate_product_list_all(
                 "display_center_name": row.display_center_name,
                 "edd": row.edd,
                 "order_shipment_mst_status_cd": row.order_shipment_mst_status_cd,
+                "order_shipment_mst_status_name": row.order_shipment_mst_status_name,  # ✅ 상태명 추가
                 "estimated_yn": row.estimated_yn,
 
                 # 쉽먼트 DTL 정보
@@ -888,4 +909,341 @@ def fetch_shipment_estimate_product_list_all(
         raise HTTPException(
             status_code=400,
             detail=f"견적 상품 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+    
+
+def fetch_estimate_mst_list(
+        order_mst_no: Union[str, int],
+        pagination: common_schemas.PaginationRequest,
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
+    """견적서 목록 조회"""
+    try:
+
+        # 1. 발주서 마스터 존재 확인
+        rocket_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not rocket_order_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 발주서를 찾을 수 없습니다."
+            )
+
+        # 2. 견적서 목록 쿼리
+        query = db.query(purchase_models.OrderShipmentEstimate).filter(
+            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,
+            purchase_models.OrderShipmentEstimate.del_yn == 0
+        )
+
+        # 정렬 (최신순)
+        query = query.order_by(purchase_models.OrderShipmentEstimate.created_at.desc())
+
+        # 전체 개수
+        total_elements = query.count()
+
+        # 페이징
+        offset = (pagination.page - 1) * pagination.size
+        estimates = query.offset(offset).limit(pagination.size).all()
+
+        # 3. 데이터 포맷팅
+        estimate_list = []
+        for estimate in estimates:
+            estimate_data = {
+                "order_shipment_estimate_no": estimate.order_shipment_estimate_no,
+                "order_mst_no": estimate.order_mst_no,
+                "company_no": estimate.company_no,
+                "estimate_id": estimate.estimate_id,
+                "estimate_date": estimate.estimate_date,
+                "product_total_amount": float(estimate.product_total_amount) if estimate.product_total_amount else 0.0,
+                "vinyl_total_amount": float(estimate.vinyl_total_amount) if estimate.vinyl_total_amount else 0.0,
+                "box_total_amount": float(estimate.box_total_amount) if estimate.box_total_amount else 0.0,
+                "estimate_total_amount": float(estimate.estimate_total_amount) if estimate.estimate_total_amount else 0.0,
+                "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
+                "created_by": estimate.created_by,
+                "updated_at": estimate.updated_at.isoformat() if estimate.updated_at else None,
+                "updated_by": estimate.updated_by
+            }
+            estimate_list.append(estimate_data)
+
+        return common_response.ResponseBuilder.paged_success(
+            content=estimate_list,
+            page=pagination.page,
+            size=pagination.size,
+            total_elements=total_elements
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"견적서 목록 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+
+def fetch_estimate_dtl(
+        order_shipment_estimate_no: Union[str, int],
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """견적서 상세 조회"""
+    try:
+        # 1. 견적서 마스터 존재 확인
+        estimate_mst = db.query(purchase_models.OrderShipmentEstimate).filter(
+            purchase_models.OrderShipmentEstimate.order_shipment_estimate_no == order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimate.del_yn == 0
+        ).first()
+
+        if not estimate_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 견적서를 찾을 수 없습니다."
+            )
+
+        # 2. 견적 제품 목록 조회 (센터명과 함께)
+        center_subquery = db.query(set_models.SetCenter.center_name).filter(
+            set_models.SetCenter.center_no == purchase_models.OrderShipmentEstimateProduct.center_no,
+            set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 포장비닐 사양 정보 조회
+        vinyl_spec_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
+            common_models.ComCode.parent_com_code == 'PACKAGE_VINYL_SPEC_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
+        estimate_products = db.query(
+            purchase_models.OrderShipmentEstimateProduct,
+            center_subquery.label("center_name"),
+            vinyl_spec_subquery.label("package_vinyl_spec_name")
+        ).filter(
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimateProduct.del_yn == 0
+        ).order_by(
+            purchase_models.OrderShipmentEstimateProduct.fail_yn.asc(),  # 성공한 것부터
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_product_no.asc()
+        ).all()
+
+        # 3. 견적 박스 목록 조회 (센터명과 함께)
+        box_center_subquery = db.query(set_models.SetCenter.center_name).filter(
+            set_models.SetCenter.center_no == purchase_models.OrderShipmentEstimateBox.center_no,
+            set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 박스 사양 정보 조회
+        box_spec_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentEstimateBox.package_box_spec_cd,
+            common_models.ComCode.parent_com_code == 'PACKAGE_BOX_SPEC_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
+        estimate_boxes = db.query(
+            purchase_models.OrderShipmentEstimateBox,
+            box_center_subquery.label("center_name"),
+            box_spec_subquery.label("package_box_spec_name")
+        ).filter(
+            purchase_models.OrderShipmentEstimateBox.order_shipment_estimate_no == order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimateBox.del_yn == 0
+        ).order_by(
+            purchase_models.OrderShipmentEstimateBox.order_shipment_estimate_box_no.asc()
+        ).all()
+
+        # 4. 견적 성공 제품 데이터 포맷팅
+        product_estimates = []
+        for product, center_name, package_vinyl_spec_name in estimate_products:
+            if product.fail_yn == 0:  # 성공한 제품만
+                product_estimates.append({
+                    "order_shipment_mst_no": product.order_shipment_mst_no,
+                    "order_shipment_dtl_no": product.order_shipment_dtl_no,
+                    "center_no": product.center_no,
+                    "center_name": center_name,
+                    "sku_name": product.sku_name,
+                    "bundle": product.bundle,
+                    "quantity": product.purchase_quantity,
+                    "sku_id": product.sku_id,
+                    "unit_price": float(product.product_unit_price) if product.product_unit_price else 0.0,
+                    "product_amount": float(product.product_total_amount) if product.product_total_amount else 0.0,
+                    "package_vinyl_spec_cd": product.package_vinyl_spec_cd,
+                    "package_vinyl_spec_name": package_vinyl_spec_name,
+                    "package_amount": float(product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
+                    "total_amount": float(product.total_amount) if product.total_amount else 0.0
+                })
+
+        # 5. 견적 실패 제품 데이터 포맷팅
+        product_estimates_fail = []
+        for product, center_name, package_vinyl_spec_name in estimate_products:
+            if product.fail_yn == 1:  # 실패한 제품만
+                product_estimates_fail.append({
+                    "order_shipment_mst_no": product.order_shipment_mst_no,
+                    "order_shipment_dtl_no": product.order_shipment_dtl_no,
+                    "center_no": product.center_no,
+                    "center_name": center_name,
+                    "sku_name": product.sku_name,
+                    "bundle": product.bundle,
+                    "quantity": product.purchase_quantity,
+                    "sku_id": product.sku_id,
+                    "unit_price": float(product.product_unit_price) if product.product_unit_price else 0.0,
+                    "product_amount": float(product.product_total_amount) if product.product_total_amount else 0.0,
+                    "package_vinyl_spec_cd": product.package_vinyl_spec_cd,
+                    "package_vinyl_spec_name": package_vinyl_spec_name,
+                    "package_amount": float(product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
+                    "total_amount": float(product.total_amount) if product.total_amount else 0.0,
+                    "error_message": product.remark  # 실패 사유
+                })
+
+        # 6. 박스 견적 데이터 포맷팅
+        box_estimates = []
+        for box, center_name, package_box_spec_name in estimate_boxes:
+            box_estimates.append({
+                "center_no": box.center_no,
+                "center_name": center_name,
+                "package_box_spec_cd": box.package_box_spec_cd,
+                "package_box_spec_name": package_box_spec_name,
+                "quantity": box.box_quantity if hasattr(box, 'box_quantity') else 1,
+                "unit_price": float(box.package_box_spec_unit_price) if box.package_box_spec_unit_price else 0.0,
+                "amount": float(box.total_amount) if box.total_amount else 0.0
+            })
+
+        # 7. 총 견적 데이터 포맷팅
+        total_estimate = {
+            "product_total_amount": float(estimate_mst.product_total_amount) if estimate_mst.product_total_amount else 0.0,
+            "vinyl_total_amount": float(estimate_mst.vinyl_total_amount) if estimate_mst.vinyl_total_amount else 0.0,
+            "box_total_amount": float(estimate_mst.box_total_amount) if estimate_mst.box_total_amount else 0.0,
+            "grand_total_amount": float(estimate_mst.estimate_total_amount) if estimate_mst.estimate_total_amount else 0.0
+        }
+
+        # 8. 응답 데이터 구성
+        response_data = {
+            "product_estimates": product_estimates,
+            "product_estimates_fail": product_estimates_fail,
+            "box_estimates": box_estimates,
+            "total_estimate": total_estimate,
+            "estimate_info": {
+                "order_shipment_estimate_no": estimate_mst.order_shipment_estimate_no,
+                "order_mst_no": estimate_mst.order_mst_no,
+                "estimate_id": estimate_mst.estimate_id,
+                "estimate_date": estimate_mst.estimate_date,
+                "deposit_yn": estimate_mst.deposit_yn,
+                "created_at": estimate_mst.created_at.isoformat() if estimate_mst.created_at else None,
+                "created_by": estimate_mst.created_by
+            }
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=f"견적서 상세 정보를 성공적으로 조회했습니다. (견적서 ID: {estimate_mst.estimate_id})"
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"견적서 상세 조회 중 오류가 발생했습니다: {str(e)}"
+        )
+def confirm_estimate_deposit(
+        order_shipment_estimate_no: Union[str, int],
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """견적서 입금확인 처리 - 관련된 모든 쉽먼트의 상태를 PAYMENT_COMPLETED로 변경하고 견적서 입금확인"""
+    try:
+        # 1. 견적서 존재 확인
+        estimate = db.query(purchase_models.OrderShipmentEstimate).filter(
+            purchase_models.OrderShipmentEstimate.order_shipment_estimate_no == order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimate.del_yn == 0
+        ).first()
+
+        if not estimate:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 견적서를 찾을 수 없습니다."
+            )
+
+        # 2. 해당 견적서에 속한 견적 상품들에서 order_shipment_mst_no 조회 (중복 제거)
+        shipment_mst_nos = db.query(
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no
+        ).filter(
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no.isnot(None)  # NULL 제외
+        ).distinct().all()
+
+        # order_shipment_mst_no 리스트 추출
+        shipment_mst_no_list = [row[0] for row in shipment_mst_nos]
+
+        if not shipment_mst_no_list:
+            raise HTTPException(
+                status_code=400,
+                detail="견적서에 연결된 쉽먼트를 찾을 수 없습니다."
+            )
+
+        # 3. 인증된 사용자 정보 가져오기
+        user_no, company_no = get_authenticated_user_no(request)
+
+        # 4. 해당 order_shipment_mst_no들의 상태를 PAYMENT_COMPLETED로 업데이트
+        updated_count = db.query(purchase_models.OrderShipmentMst).filter(
+            purchase_models.OrderShipmentMst.order_shipment_mst_no.in_(shipment_mst_no_list),
+            purchase_models.OrderShipmentMst.del_yn == 0
+        ).update(
+            {
+                "order_shipment_mst_status_cd": "PAYMENT_COMPLETED",
+                "updated_by": user_no,
+                "updated_at": func.now()
+            },
+            synchronize_session=False
+        )
+
+        # 5. 견적서의 deposit_yn을 1로 업데이트 (입금확인)
+        estimate.deposit_yn = 1
+        estimate.updated_by = user_no
+        estimate.updated_at = func.now()
+
+        # 6. 커밋
+        db.commit()
+        db.refresh(estimate)  # 업데이트된 견적서 정보 새로고침
+
+        # 7. 업데이트된 쉽먼트 정보 조회 (확인용)
+        updated_shipments = db.query(purchase_models.OrderShipmentMst).filter(
+            purchase_models.OrderShipmentMst.order_shipment_mst_no.in_(shipment_mst_no_list),
+            purchase_models.OrderShipmentMst.del_yn == 0
+        ).all()
+
+        # 8. 응답 데이터 구성
+        response_data = {
+            "order_shipment_estimate_no": order_shipment_estimate_no,
+            "estimate_id": estimate.estimate_id,
+            "deposit_yn": estimate.deposit_yn,
+            "updated_shipment_count": updated_count,
+            "updated_shipments": [
+                {
+                    "order_shipment_mst_no": shipment.order_shipment_mst_no,
+                    "center_no": shipment.center_no,
+                    "display_center_name": shipment.display_center_name,
+                    "order_shipment_mst_status_cd": shipment.order_shipment_mst_status_cd,
+                    "edd": shipment.edd
+                }
+                for shipment in updated_shipments
+            ]
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=f"견적서 입금확인이 완료되었습니다. (견적서 ID: {estimate.estimate_id}, 업데이트된 쉽먼트: {updated_count}건)"
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"견적서 입금확인 처리 중 오류가 발생했습니다: {str(e)}"
         )

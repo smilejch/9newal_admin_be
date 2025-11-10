@@ -71,4 +71,43 @@ async def fetch_shipment_estimate_products_all(
 ):
     return purchase_service.fetch_shipment_estimate_product_list_all(order_mst_no, request, pagination, db)
 
+@purchase_router.get("/shipments/estimates/{order_mst_no}")
+def fetch_estimate_mst_list(
+    request: Request,
+    order_mst_no: Union[str, int] = Path(..., description="발주서 번호"),
+    pagination: common_schemas.PaginationRequest = Depends(),
+    db: Session = Depends(get_db)
+) -> ApiResponse[Union[PageResponse[dict], None]]:
+    """견적서 목록 조회"""
+    return purchase_service.fetch_estimate_mst_list(order_mst_no, pagination, request, db)
 
+@purchase_router.get("/shipments/estimates/{order_shipment_estimate_no}/detail")
+def fetch_estimate_dtl(
+    request: Request,
+    order_shipment_estimate_no: Union[str, int] = Path(..., description="견적서 번호"),
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    """견적서 상세 조회"""
+    return purchase_service.fetch_estimate_dtl(order_shipment_estimate_no, request, db)
+
+
+@purchase_router.get("/shipments/estimates/{order_mst_no}/deposit-confirm")
+def update_(
+    request: Request,
+    order_mst_no: Union[str, int] = Path(..., description="발주서 번호"),
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return purchase_service.fetch_estimate_dtl(order_mst_no, request, db)
+
+
+@purchase_router.put("/shipments/estimates/{order_shipment_estimate_no}/deposit-confirm")
+async def confirm_estimate_deposit(
+        order_shipment_estimate_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    return purchase_service.confirm_estimate_deposit(
+        order_shipment_estimate_no=order_shipment_estimate_no,
+        request=request,
+        db=db
+    )
