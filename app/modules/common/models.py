@@ -76,3 +76,13 @@ class ComAccountInfo1688(Base):
     created_at = Column(DateTime, default=func.now(), nullable=False)
     updated_by = Column(Integer, nullable=True)
     updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
+
+class ComToken(Base):
+    __tablename__ = "COM_TOKEN"
+
+    token_no = Column(Integer, primary_key=True, autoincrement=True, comment='토큰 번호')
+    token_type = Column(String(100), nullable=True, default="", comment='토큰 종류')
+    token = Column(String(100), nullable=True, default="", comment="토큰")
+    token_expire_date = Column(String(100), nullable=True,  comment='토큰만료일')
+    created_at = Column(DateTime, default=func.now(), nullable=False)
+    updated_at = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False)
