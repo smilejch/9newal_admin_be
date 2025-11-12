@@ -111,3 +111,53 @@ async def confirm_estimate_deposit(
         request=request,
         db=db
     )
+
+@purchase_router.get("/orders/{order_mst_no}/shipments/download")
+async def download_shipment_dtl_excel(
+        order_mst_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Growth 쉽먼트 박스 구성 엑셀 다운로드"""
+    return await purchase_service.download_shipment_dtl_excel(
+        order_mst_no,
+        request,
+        db
+    )
+
+@purchase_router.get("/shipments/estimates/{order_mst_no}/download")
+async def download_shipment_estimate_excel(
+        order_mst_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Growth 쉽먼트 박스 구성 엑셀 다운로드"""
+    return await purchase_service.download_shipment_estimate_excel(
+        order_mst_no,
+        request,
+        db
+    )
+
+@purchase_router.get("/shipments/{order_mst_no}/estimate-products-all/download")
+async def download_shipment_estimate_product_all_excel(
+        order_mst_no: int,
+        request: Request,
+        db: Session = Depends(get_db)
+):
+    """Growth 쉽먼트 박스 구성 엑셀 다운로드"""
+    return await purchase_service.download_shipment_estimate_product_all_excel(
+        order_mst_no,
+        request,
+        db
+    )
+
+@purchase_router.post("/orders/{order_mst_no}/1688-tracking-number/upload")
+async def upload_1688_tracking_number(
+    request: Request,
+    order_mst_no: Union[str, int] = Path(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    return await purchase_service.upload_1688_tracking_number(order_mst_no, file, request, db)
+
+

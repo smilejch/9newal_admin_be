@@ -12,9 +12,15 @@ from app.modules.auth import models as auth_models
 from app.modules.common import models as common_models
 from app.common.schemas import request as common_schemas
 from app.common.response import ApiResponse, PageResponse, ResponseBuilder
-from app.utils.auth_util import get_authenticated_user_no
 from sqlalchemy import func
+from app.utils.auth_util import get_authenticated_user_no
 from app.utils import com_code_util
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from datetime import datetime
+from fastapi.responses import FileResponse
+import tempfile
+import os
 
 def fetch_order_mst_list(
     filter: purchase_schemas.OrderMstFilterRequest,
@@ -302,6 +308,7 @@ def fetch_shipment_dtl_list(
             detail=f"쉽먼트 DTL 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
 
+
 def fetch_shipment_estimate_product_list(
         order_shipment_mst_no: Union[str, int],
         request: Request,
@@ -350,12 +357,11 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentEstimateProduct.purchase_quantity,
             purchase_models.OrderShipmentEstimateProduct.product_unit_price,
             purchase_models.OrderShipmentEstimateProduct.product_total_amount.label("product_product_total_amount"),
-            # 별칭 지정
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_unit_price,
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_total_amount,
             purchase_models.OrderShipmentEstimateProduct.fail_yn,
-            purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),  # 별칭 지정
+            purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),
             purchase_models.OrderShipmentEstimateProduct.remark,
             purchase_models.OrderShipmentEstimateProduct.platform_type_cd.label("product_platform_type_cd"),
             purchase_models.OrderShipmentEstimateProduct.created_at.label("product_created_at"),
@@ -366,7 +372,7 @@ def fetch_shipment_estimate_product_list(
             # Estimate 컬럼
             purchase_models.OrderShipmentEstimate.estimate_id,
             purchase_models.OrderShipmentEstimate.estimate_date,
-            purchase_models.OrderShipmentEstimate.product_total_amount.label("estimate_product_total_amount"),  # 별칭 지정
+            purchase_models.OrderShipmentEstimate.product_total_amount.label("estimate_product_total_amount"),
             purchase_models.OrderShipmentEstimate.vinyl_total_amount,
             purchase_models.OrderShipmentEstimate.box_total_amount,
             purchase_models.OrderShipmentEstimate.estimate_total_amount,
@@ -396,11 +402,14 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentDtl.coupang_product_id,
             purchase_models.OrderShipmentDtl.coupang_option_id,
             purchase_models.OrderShipmentDtl.transport_type,
-            purchase_models.OrderShipmentDtl.confirmed_quantity,
+            purchase_models.OrderShipmentDtl.purchase_tracking_number,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.box_name,
-            purchase_models.OrderShipmentPackingDtl.packing_quantity
+            purchase_models.OrderShipmentPackingDtl.packing_quantity,
+
+            # ✅ PackingMst 컬럼 추가
+            purchase_models.OrderShipmentPackingMst.tracking_number
         ).join(
             purchase_models.OrderShipmentEstimate,
             purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
@@ -417,7 +426,13 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentPackingDtl,
             and_(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
-                purchase_models.OrderShipmentPackingDtl.del_yn == 0  # JOIN 조건에 del_yn 포함
+                purchase_models.OrderShipmentPackingDtl.del_yn == 0
+            )
+        ).outerjoin(  # ✅ PackingMst 조인 추가
+            purchase_models.OrderShipmentPackingMst,
+            and_(
+                purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
+                purchase_models.OrderShipmentPackingMst.del_yn == 0
             )
         ).filter(
             purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no == order_shipment_mst_no,
@@ -498,9 +513,11 @@ def fetch_shipment_estimate_product_list(
                 "coupang_option_id": row.coupang_option_id if row.coupang_option_id else None,
                 "transport_type": row.transport_type if row.transport_type else None,
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
+                "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
 
                 # Packing 정보
                 "box_name": row.box_name if row.box_name else None,
+                "tracking_number": row.tracking_number if row.tracking_number else None,
 
                 # 생성/수정 정보
                 "created_at": row.product_created_at,
@@ -676,6 +693,7 @@ def fetch_shipment_dtl_all_list(
             detail=f"쉽먼트 DTL 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
 
+
 def fetch_shipment_estimate_product_list_all(
         order_mst_no: Union[str, int],
         request: Request,
@@ -762,8 +780,8 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
             purchase_models.OrderShipmentMst.estimated_yn,
             center_subquery.label("center_name"),
-            shipment_status_subquery.label("order_shipment_mst_status_name"),  # ✅ 상태명 추가
-            vinyl_spec_subquery.label("package_vinyl_spec_name"),  # ✅ 포장비닐 사양명 추가
+            shipment_status_subquery.label("order_shipment_mst_status_name"),
+            vinyl_spec_subquery.label("package_vinyl_spec_name"),
 
             # ShipmentDtl 컬럼 (선택적)
             purchase_models.OrderShipmentDtl.order_number,
@@ -782,10 +800,14 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentDtl.coupang_option_id,
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.linked_open_uid,
+            purchase_models.OrderShipmentDtl.purchase_tracking_number,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
-            purchase_models.OrderShipmentPackingDtl.box_name
+            purchase_models.OrderShipmentPackingDtl.box_name,
+
+            # PackingMst 컬럼
+            purchase_models.OrderShipmentPackingMst.tracking_number,
         ).join(
             purchase_models.OrderShipmentEstimate,
             purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
@@ -803,6 +825,12 @@ def fetch_shipment_estimate_product_list_all(
             and_(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
+            )
+        ).outerjoin(  # ✅ PackingMst 조인 추가
+            purchase_models.OrderShipmentPackingMst,
+            and_(
+                purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
+                purchase_models.OrderShipmentPackingMst.del_yn == 0
             )
         ).filter(
             purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,
@@ -838,11 +866,14 @@ def fetch_shipment_estimate_product_list_all(
                 "bundle": row.bundle,
                 "purchase_quantity": row.purchase_quantity,
                 "product_unit_price": float(row.product_unit_price) if row.product_unit_price else 0.0,
-                "product_product_total_amount": float(row.product_product_total_amount) if row.product_product_total_amount else 0.0,
+                "product_product_total_amount": float(
+                    row.product_product_total_amount) if row.product_product_total_amount else 0.0,
                 "package_vinyl_spec_cd": row.package_vinyl_spec_cd,
-                "package_vinyl_spec_name": row.package_vinyl_spec_name,  # ✅ 포장비닐 사양명 추가
-                "package_vinyl_spec_unit_price": float(row.package_vinyl_spec_unit_price) if row.package_vinyl_spec_unit_price else 0.0,
-                "package_vinyl_spec_total_amount": float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0,
+                "package_vinyl_spec_name": row.package_vinyl_spec_name,
+                "package_vinyl_spec_unit_price": float(
+                    row.package_vinyl_spec_unit_price) if row.package_vinyl_spec_unit_price else 0.0,
+                "package_vinyl_spec_total_amount": float(
+                    row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0,
                 "fail_yn": row.fail_yn,
                 "total_amount": float(row.product_total_amount) if row.product_total_amount else 0.0,
                 "remark": row.remark,
@@ -853,7 +884,8 @@ def fetch_shipment_estimate_product_list_all(
                 "estimate_id": row.estimate_id,
                 "estimate_date": row.estimate_date,
                 "estimate_total_amount": float(row.estimate_total_amount) if row.estimate_total_amount else 0.0,
-                "estimate_product_total_amount": float(row.estimate_product_total_amount) if row.estimate_product_total_amount else 0.0,
+                "estimate_product_total_amount": float(
+                    row.estimate_product_total_amount) if row.estimate_product_total_amount else 0.0,
                 "vinyl_total_amount": float(row.vinyl_total_amount) if row.vinyl_total_amount else 0.0,
                 "box_total_amount": float(row.box_total_amount) if row.box_total_amount else 0.0,
 
@@ -863,7 +895,7 @@ def fetch_shipment_estimate_product_list_all(
                 "display_center_name": row.display_center_name,
                 "edd": row.edd,
                 "order_shipment_mst_status_cd": row.order_shipment_mst_status_cd,
-                "order_shipment_mst_status_name": row.order_shipment_mst_status_name,  # ✅ 상태명 추가
+                "order_shipment_mst_status_name": row.order_shipment_mst_status_name,
                 "estimated_yn": row.estimated_yn,
 
                 # 쉽먼트 DTL 정보
@@ -883,10 +915,12 @@ def fetch_shipment_estimate_product_list_all(
                 "coupang_option_id": row.coupang_option_id if row.coupang_option_id else None,
                 "transport_type": row.transport_type if row.transport_type else None,
                 "linked_open_uid": row.linked_open_uid if row.linked_open_uid else None,
+                "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
 
                 # Packing 정보
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
                 "box_name": row.box_name if row.box_name else None,
+                "tracking_number": row.tracking_number if row.tracking_number else None,
 
                 # 생성/수정 정보
                 "created_at": row.product_created_at,
@@ -910,7 +944,7 @@ def fetch_shipment_estimate_product_list_all(
             status_code=400,
             detail=f"견적 상품 전체 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
-    
+
 
 def fetch_estimate_mst_list(
         order_mst_no: Union[str, int],
@@ -1246,4 +1280,849 @@ def confirm_estimate_deposit(
         raise HTTPException(
             status_code=400,
             detail=f"견적서 입금확인 처리 중 오류가 발생했습니다: {str(e)}"
+        )
+    
+
+async def download_shipment_dtl_excel(
+        order_mst_no: Union[str, int],
+        request: Request,
+        db: Session
+) -> FileResponse:
+    """Growth 발주 구매 정보 엑셀 다운로드 - 새 파일 생성"""
+    try:
+        # 발주서 마스터 존재 확인
+        existing_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not existing_order_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 발주서를 찾을 수 없습니다."
+            )
+
+        # center_name 서브쿼리
+        center_subquery = db.query(set_models.SetCenter.center_name).filter(
+            set_models.SetCenter.center_no == purchase_models.OrderShipmentMst.center_no,
+            set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 데이터 조회 (fetch_shipment_dtl_all_list와 유사)
+        query = db.query(
+            purchase_models.OrderShipmentMst,
+            purchase_models.OrderShipmentDtl,
+            purchase_models.OrderShipmentPackingDtl,
+            purchase_models.OrderShipmentPackingMst,
+            center_subquery.label("center_name")
+        ).join(
+            purchase_models.OrderShipmentDtl,
+            purchase_models.OrderShipmentMst.order_shipment_mst_no == purchase_models.OrderShipmentDtl.order_shipment_mst_no
+        ).outerjoin(
+            purchase_models.OrderShipmentPackingDtl,
+            and_(
+                purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
+                purchase_models.OrderShipmentPackingDtl.del_yn == 0
+            )
+        ).outerjoin(
+            purchase_models.OrderShipmentPackingMst,
+            and_(
+                purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
+                purchase_models.OrderShipmentPackingMst.del_yn == 0
+            )
+        ).filter(
+            purchase_models.OrderShipmentMst.order_mst_no == order_mst_no,
+            purchase_models.OrderShipmentMst.del_yn == 0,
+            purchase_models.OrderShipmentDtl.del_yn == 0
+        ).order_by(
+            purchase_models.OrderShipmentMst.estimated_yn.desc(),
+            purchase_models.OrderShipmentDtl.created_at.desc()
+        )
+
+        results = query.all()
+
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail="다운로드할 데이터가 없습니다."
+            )
+
+        # 새 워크북 생성
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "발주 구매 정보"
+
+        # 스타일 정의
+        header_font = Font(bold=True, size=11, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+
+        cell_alignment = Alignment(horizontal="left", vertical="center")
+        center_alignment = Alignment(horizontal="center", vertical="center")
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        headers = [
+            "발주번호",
+            "물류센터",
+            "상태",
+            "입고유형",
+            "입고예정일",
+            "상품번호(SKU ID)",
+            "상품바코드",
+            "상품이름",
+            "확정수량",
+            "포장수량",
+            "박스명",
+            "송장번호"
+        ]
+
+        # 공통코드
+        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD", db)
+        # 헤더 작성
+        for col_idx, header in enumerate(headers, start=1):
+            cell = worksheet.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # 데이터 작성
+        for row_idx, (mst, dtl, packing_dtl, packing_mst, center_name) in enumerate(results, start=2):
+            # 발주번호
+            cell = worksheet.cell(row=row_idx, column=1, value=dtl.order_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 물류센터
+            cell = worksheet.cell(row=row_idx, column=2, value=center_name)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 상태
+            com_code = shipment_status_com_code_dict.get(mst.order_shipment_mst_status_cd)
+            cell = worksheet.cell(row=row_idx, column=3, value=com_code.code_name)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 입고유형
+            cell = worksheet.cell(row=row_idx, column=4, value=dtl.transport_type)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 입고예정일
+            cell = worksheet.cell(row=row_idx, column=5, value=mst.edd)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # SKU ID
+            cell = worksheet.cell(row=row_idx, column=6, value=dtl.sku_id)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 상품바코드
+            cell = worksheet.cell(row=row_idx, column=7, value=dtl.sku_barcode)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 상품이름
+            cell = worksheet.cell(row=row_idx, column=8, value=dtl.sku_name)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 확정수량
+            cell = worksheet.cell(row=row_idx, column=9, value=dtl.confirmed_quantity)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 포장수량
+            packing_qty = packing_dtl.packing_quantity if packing_dtl else None
+            cell = worksheet.cell(row=row_idx, column=10, value=packing_qty)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 박스명
+            box_name = packing_mst.box_name if packing_mst else None
+            cell = worksheet.cell(row=row_idx, column=11, value=box_name)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 1688 운송장번호
+            cell = worksheet.cell(row=row_idx, column=12, value=dtl.purchase_tracking_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+        # 열 너비 자동 조정
+        column_widths = {
+            1: 15,
+            2: 12,
+            3: 20,
+            4: 20,
+            5: 20,
+            6: 40,
+            7: 12,
+            8: 12,
+            9: 20,
+            10: 50,
+            11: 30,
+            12: 12,
+            13: 12,
+        }
+
+        for col, width in column_widths.items():
+            worksheet.column_dimensions[worksheet.cell(row=1, column=col).column_letter].width = width
+
+        # 임시 파일 생성
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            temp_path = tmp_file.name
+
+        # 워크북 저장
+        workbook.save(temp_path)
+        workbook.close()
+
+        # 파일명 생성
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"발주구매정보_{order_mst_no}_{current_time}.xlsx"
+
+        return FileResponse(
+            path=temp_path,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=None  # 파일 전송 후 자동 삭제
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 임시 파일 정리
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+async def download_shipment_estimate_excel(
+        order_mst_no: Union[str, int],
+        request: Request,
+        db: Session
+) -> FileResponse:
+    """Growth 발주 구매 정보 엑셀 다운로드 - 새 파일 생성"""
+    try:
+        # 발주서 마스터 존재 확인
+        existing_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not existing_order_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 발주서를 찾을 수 없습니다."
+            )
+
+        # 데이터 조회 (fetch_shipment_dtl_all_list와 유사)
+        query = db.query(
+            purchase_models.OrderShipmentEstimate
+        ).filter(
+            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,
+            purchase_models.OrderShipmentEstimate.del_yn == 0,
+        ).order_by(
+            purchase_models.OrderShipmentEstimate.created_at.desc()
+        )
+
+        results = query.all()
+
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail="다운로드할 데이터가 없습니다."
+            )
+
+        # 새 워크북 생성
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "견적 리스트"
+
+        # 스타일 정의
+        header_font = Font(bold=True, size=11, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+
+        cell_alignment = Alignment(horizontal="left", vertical="center")
+        center_alignment = Alignment(horizontal="center", vertical="center")
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        headers = [
+            "견적서 번호",
+            "견적일자",
+            "견적총액"
+        ]
+
+        # 공통코드
+        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD",
+                                                                                       db)
+        # 헤더 작성
+        for col_idx, header in enumerate(headers, start=1):
+            cell = worksheet.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # 데이터 작성
+        for row_idx, (estimate) in enumerate(results, start=2):
+            # 견적번호
+            cell = worksheet.cell(row=row_idx, column=1, value=estimate.estimate_id)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 견적일자
+            cell = worksheet.cell(row=row_idx, column=2, value=estimate.estimate_date)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 견적총액
+            cell = worksheet.cell(row=row_idx, column=3, value=estimate.estimate_total_amount)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+        # 열 너비 자동 조정
+        column_widths = {
+            1: 15,
+            2: 12,
+            3: 20
+        }
+
+        for col, width in column_widths.items():
+            worksheet.column_dimensions[worksheet.cell(row=1, column=col).column_letter].width = width
+
+        # 임시 파일 생성
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            temp_path = tmp_file.name
+
+        # 워크북 저장
+        workbook.save(temp_path)
+        workbook.close()
+
+        # 파일명 생성
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"견적리스트_{order_mst_no}_{current_time}.xlsx"
+
+        return FileResponse(
+            path=temp_path,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=None  # 파일 전송 후 자동 삭제
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 임시 파일 정리
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+from fastapi.responses import FileResponse
+import tempfile
+import os
+from datetime import datetime
+
+
+async def download_shipment_estimate_product_all_excel(
+        order_mst_no: Union[str, int],
+        request: Request,
+        db: Session
+) -> FileResponse:
+    """견적 상품 전체 목록 엑셀 다운로드"""
+    try:
+
+        # 발주서 마스터 존재 확인
+        existing_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not existing_order_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 발주서를 찾을 수 없습니다."
+            )
+
+        # center_name 서브쿼리
+        center_subquery = db.query(set_models.SetCenter.center_name).filter(
+            set_models.SetCenter.center_no == purchase_models.OrderShipmentMst.center_no,
+            set_models.SetCenter.del_yn == 0
+        ).scalar_subquery()
+
+        # 쉽먼트 상태명 서브쿼리
+        shipment_status_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
+            common_models.ComCode.parent_com_code == 'ORDER_SHIPMENT_MST_STATUS_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
+        # 포장비닐 사양명 서브쿼리
+        vinyl_spec_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
+            common_models.ComCode.parent_com_code == 'PACKAGE_VINYL_SPEC_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
+        # 데이터 조회 (fetch_shipment_estimate_product_list_all과 동일)
+        query = (db.query(
+            # EstimateProduct 컬럼
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_product_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no,
+            purchase_models.OrderShipmentEstimateProduct.sku_id,
+            purchase_models.OrderShipmentEstimateProduct.sku_name,
+            purchase_models.OrderShipmentEstimateProduct.purchase_quantity,
+            purchase_models.OrderShipmentEstimateProduct.product_unit_price,
+            purchase_models.OrderShipmentEstimateProduct.product_total_amount.label("product_product_total_amount"),
+            purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_total_amount,
+            purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),
+            purchase_models.OrderShipmentEstimateProduct.remark,
+
+            # Estimate 컬럼
+            purchase_models.OrderShipmentEstimate.estimate_id,
+
+            # ShipmentMst 컬럼
+            purchase_models.OrderShipmentMst.edd,
+            purchase_models.OrderShipmentMst.order_shipment_mst_status_cd,
+            center_subquery.label("center_name"),
+            shipment_status_subquery.label("order_shipment_mst_status_name"),
+
+            # ShipmentDtl 컬럼
+            purchase_models.OrderShipmentDtl.order_number,
+            purchase_models.OrderShipmentDtl.sku_barcode,
+            purchase_models.OrderShipmentDtl.confirmed_quantity.label("dtl_confirmed_quantity"),
+            purchase_models.OrderShipmentDtl.transport_type,
+            purchase_models.OrderShipmentDtl.purchase_tracking_number,
+
+            # PackingDtl 컬럼
+            purchase_models.OrderShipmentPackingDtl.packing_quantity,
+            purchase_models.OrderShipmentPackingDtl.box_name
+        ).join(
+            purchase_models.OrderShipmentEstimate,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
+        ).join(
+            purchase_models.OrderShipmentMst,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_mst_no == purchase_models.OrderShipmentMst.order_shipment_mst_no
+        ).outerjoin(
+            purchase_models.OrderShipmentDtl,
+            and_(
+                purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no == purchase_models.OrderShipmentDtl.order_shipment_dtl_no,
+                purchase_models.OrderShipmentDtl.del_yn == 0
+            )
+        ).outerjoin(
+            purchase_models.OrderShipmentPackingDtl,
+            and_(
+                purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
+                purchase_models.OrderShipmentPackingDtl.del_yn == 0
+            )
+        ).filter(
+            purchase_models.OrderShipmentEstimate.order_mst_no == order_mst_no,
+            purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
+            purchase_models.OrderShipmentEstimate.del_yn == 0,
+            purchase_models.OrderShipmentMst.del_yn == 0
+        ).order_by(
+            purchase_models.OrderShipmentMst.estimated_yn.desc(),
+            purchase_models.OrderShipmentEstimateProduct.created_at.desc()
+        ))
+
+        results = query.all()
+
+        if not results:
+            raise HTTPException(
+                status_code=404,
+                detail="다운로드할 데이터가 없습니다."
+            )
+
+        # 새 워크북 생성
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "견적 상품 목록"
+
+        # 스타일 정의
+        header_font = Font(bold=True, size=11, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+
+        yellow_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+
+        cell_alignment = Alignment(horizontal="left", vertical="center")
+        center_alignment = Alignment(horizontal="center", vertical="center")
+        right_alignment = Alignment(horizontal="right", vertical="center")
+
+        thin_border = Border(
+            left=Side(style='thin'),
+            right=Side(style='thin'),
+            top=Side(style='thin'),
+            bottom=Side(style='thin')
+        )
+
+        # 헤더 정의
+        headers = [
+            "견적서 번호",
+            "발주번호",
+            "물류센터",
+            "상태",
+            "입고유형",
+            "입고예정일",
+            "상품번호(SKU ID)",
+            "상품바코드",
+            "상품이름",
+            "확정수량",
+            "포장수량",
+            "박스명",
+            "1688 운송장번호",
+            "비고",
+            "단가",
+            "제품금액",
+            "포장금액",
+            "총금액"
+        ]
+
+        # 헤더 작성
+        for col_idx, header in enumerate(headers, start=1):
+            cell = worksheet.cell(row=1, column=col_idx, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
+
+        # 데이터 작성
+        for row_idx, row in enumerate(results, start=2):
+            # 견적서 번호
+            cell = worksheet.cell(row=row_idx, column=1, value=row.estimate_id)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 발주번호
+            cell = worksheet.cell(row=row_idx, column=2, value=row.order_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 물류센터
+            cell = worksheet.cell(row=row_idx, column=3, value=row.center_name)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 상태
+            cell = worksheet.cell(row=row_idx, column=4, value=row.order_shipment_mst_status_name)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 입고유형
+            cell = worksheet.cell(row=row_idx, column=5, value=row.transport_type)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 입고예정일
+            cell = worksheet.cell(row=row_idx, column=6, value=row.edd)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 상품번호(SKU ID)
+            cell = worksheet.cell(row=row_idx, column=7, value=row.sku_id)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 상품바코드
+            cell = worksheet.cell(row=row_idx, column=8, value=row.sku_barcode)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 상품이름
+            cell = worksheet.cell(row=row_idx, column=9, value=row.sku_name)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 확정수량
+            cell = worksheet.cell(row=row_idx, column=10, value=row.dtl_confirmed_quantity)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 포장수량
+            cell = worksheet.cell(row=row_idx, column=11, value=row.packing_quantity)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
+            # 박스명
+            cell = worksheet.cell(row=row_idx, column=12, value=row.box_name)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 송장번호 (1688 운송장번호)
+            cell = worksheet.cell(row=row_idx, column=13, value=row.purchase_tracking_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+            cell.fill = yellow_fill
+
+            # 비고
+            cell = worksheet.cell(row=row_idx, column=14, value=row.remark)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+            # 단가
+            unit_price = float(row.product_unit_price) if row.product_unit_price else 0.0
+            cell = worksheet.cell(row=row_idx, column=15, value=unit_price)
+            cell.alignment = right_alignment
+            cell.border = thin_border
+            cell.number_format = '#,##0'
+
+            # 제품금액
+            product_amount = float(row.product_product_total_amount) if row.product_product_total_amount else 0.0
+            cell = worksheet.cell(row=row_idx, column=16, value=product_amount)
+            cell.alignment = right_alignment
+            cell.border = thin_border
+            cell.number_format = '#,##0'
+
+            # 포장금액
+            package_amount = float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0
+            cell = worksheet.cell(row=row_idx, column=17, value=package_amount)
+            cell.alignment = right_alignment
+            cell.border = thin_border
+            cell.number_format = '#,##0'
+
+            # 총금액
+            total_amount = float(row.product_total_amount) if row.product_total_amount else 0.0
+            cell = worksheet.cell(row=row_idx, column=18, value=total_amount)
+            cell.alignment = right_alignment
+            cell.border = thin_border
+            cell.number_format = '#,##0'
+
+        # 열 너비 설정
+        column_widths = {
+            1: 20,  # 견적서 번호
+            2: 20,  # 발주번호
+            3: 15,  # 물류센터
+            4: 15,  # 상태
+            5: 12,  # 입고유형
+            6: 12,  # 입고예정일
+            7: 20,  # 상품번호(SKU ID)
+            8: 20,  # 상품바코드
+            9: 40,  # 상품이름
+            10: 12,  # 확정수량
+            11: 12,  # 포장수량
+            12: 25,  # 박스명
+            13: 20,  # 송장번호
+            14: 30,  # 비고
+            15: 12,  # 단가
+            16: 12,  # 제품금액
+            17: 12,  # 포장금액
+            18: 12  # 총금액
+        }
+
+        for col, width in column_widths.items():
+            worksheet.column_dimensions[worksheet.cell(row=1, column=col).column_letter].width = width
+
+        # 임시 파일 생성
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
+            temp_path = tmp_file.name
+
+        # 워크북 저장
+        workbook.save(temp_path)
+        workbook.close()
+
+        # 파일명 생성
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"견적상품목록_{order_mst_no}_{current_time}.xlsx"
+
+        return FileResponse(
+            path=temp_path,
+            filename=filename,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            background=None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # 임시 파일 정리
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+        raise HTTPException(
+            status_code=500,
+            detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+from openpyxl import load_workbook
+from fastapi import UploadFile
+import io
+
+
+async def upload_1688_tracking_number(
+        order_mst_no: Union[str, int],
+        file: UploadFile,
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """1688 송장번호 엑셀 업로드 및 업데이트"""
+    try:
+        # 사용자 인증
+        user_no, company_no = get_authenticated_user_no(request)
+
+        # 발주서 마스터 존재 확인
+        existing_order_mst = db.query(purchase_models.OrderMst).filter(
+            purchase_models.OrderMst.order_mst_no == order_mst_no,
+            purchase_models.OrderMst.del_yn == 0
+        ).first()
+
+        if not existing_order_mst:
+            raise HTTPException(
+                status_code=404,
+                detail="해당 발주서를 찾을 수 없습니다."
+            )
+
+        # 파일 확장자 확인
+        if not file.filename.endswith(('.xlsx', '.xls')):
+            raise HTTPException(
+                status_code=400,
+                detail="엑셀 파일(.xlsx, .xls)만 업로드 가능합니다."
+            )
+
+        # 파일 내용 읽기
+        contents = await file.read()
+
+        # openpyxl로 엑셀 파일 로드
+        workbook = load_workbook(io.BytesIO(contents))
+        worksheet = workbook.active
+
+        # 업데이트 결과 저장
+        update_count = 0
+        error_count = 0
+        error_details = []
+
+        # 헤더 행 스킵하고 데이터 행부터 읽기 (2행부터)
+        for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
+            try:
+                # 컬럼 매핑
+                estimate_id = row[0]  # 견적서 번호 (A열)
+                order_number = row[1]  # 발주번호 (B열)
+                center_name = row[2]  # 물류센터 (C열)
+                status = row[3]  # 상태 (D열)
+                transport_type = row[4]  # 입고유형 (E열)
+                edd = row[5]  # 입고예정일 (F열)
+                sku_id = row[6]  # 상품번호(SKU ID) (G열)
+                sku_barcode = row[7]  # 상품바코드 (H열)
+                sku_name = row[8]  # 상품이름 (I열)
+                confirmed_quantity = row[9]  # 확정수량 (J열)
+                packing_quantity = row[10]  # 포장수량 (K열)
+                box_name = row[11]  # 박스명 (L열)
+                tracking_number = row[12]  # 송장번호 (M열)
+                remark = row[13]  # 비고 (N열)
+
+                # 필수 필드 체크 (SKU ID와 발주번호는 필수)
+                if not sku_id or not order_number:
+                    error_details.append({
+                        "row": row_idx,
+                        "error": "SKU ID 또는 발주번호가 없습니다.",
+                        "sku_id": sku_id,
+                        "order_number": order_number
+                    })
+                    error_count += 1
+                    continue
+
+                # 송장번호가 없으면 스킵
+                if not tracking_number or str(tracking_number).strip() == "":
+                    continue
+
+                # OrderShipmentDtl에서 해당 레코드 찾기
+                # order_mst_no -> OrderShipmentMst -> OrderShipmentDtl
+                shipment_dtl = db.query(purchase_models.OrderShipmentDtl).join(
+                    purchase_models.OrderShipmentMst,
+                    purchase_models.OrderShipmentDtl.order_shipment_mst_no == purchase_models.OrderShipmentMst.order_shipment_mst_no
+                ).filter(
+                    purchase_models.OrderShipmentMst.order_mst_no == order_mst_no,
+                    purchase_models.OrderShipmentDtl.sku_id == sku_id,
+                    purchase_models.OrderShipmentDtl.order_number == order_number,
+                    purchase_models.OrderShipmentDtl.del_yn == 0,
+                    purchase_models.OrderShipmentMst.del_yn == 0
+                ).first()
+
+                if not shipment_dtl:
+                    error_details.append({
+                        "row": row_idx,
+                        "error": "해당 SKU ID와 발주번호로 데이터를 찾을 수 없습니다.",
+                        "sku_id": sku_id,
+                        "order_number": order_number
+                    })
+                    error_count += 1
+                    continue
+
+                # purchase_tracking_number 업데이트
+                shipment_dtl.purchase_tracking_number = str(tracking_number).strip()
+                shipment_dtl.updated_by = user_no
+                shipment_dtl.updated_at = func.now()
+
+                update_count += 1
+
+            except Exception as e:
+                error_details.append({
+                    "row": row_idx,
+                    "error": f"처리 중 오류: {str(e)}",
+                    "sku_id": sku_id if 'sku_id' in locals() else None,
+                    "order_number": order_number if 'order_number' in locals() else None
+                })
+                error_count += 1
+                continue
+
+        # 커밋
+        db.commit()
+
+        # 응답 데이터 구성
+        response_data = {
+            "order_mst_no": order_mst_no,
+            "total_rows": worksheet.max_row - 1,  # 헤더 제외
+            "update_count": update_count,
+            "error_count": error_count,
+            "error_details": error_details if error_details else None
+        }
+
+        if error_count > 0:
+            message = f"1688 송장번호 업로드가 부분적으로 완료되었습니다. (성공: {update_count}건, 실패: {error_count}건)"
+        else:
+            message = f"1688 송장번호 업로드가 완료되었습니다. (총 {update_count}건 업데이트)"
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=message
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"1688 송장번호 업로드 중 오류가 발생했습니다: {str(e)}"
         )
