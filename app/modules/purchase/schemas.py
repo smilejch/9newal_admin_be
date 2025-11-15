@@ -142,3 +142,10 @@ class PurchaseRequestSubmit(BaseModel):
     product_estimates_fail: List[ProductEstimateFailRequest]
     box_estimates: List[BoxEstimateRequest]
     total_estimates: TotalEstimateRequest
+
+class IssueCjTackingNumberRequest(BaseModel):
+    order_shipment_packing_mst_nos: List[int]
+
+class Create1688OrderRequest(BaseModel):
+    order_shipment_dtl_nos: List[int]  # 쉽먼트 DTL 번호 리스트
+    message: Optional[str] = None  # 구매자 메시지

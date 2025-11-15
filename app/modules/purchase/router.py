@@ -161,3 +161,28 @@ async def upload_1688_tracking_number(
     return await purchase_service.upload_1688_tracking_number(order_mst_no, file, request, db)
 
 
+@purchase_router.post("/shipments/cj-tracking-number/issue")
+async def issue_cj_tracking_number(
+        request: Request,
+        Issue_tracking_number_request: purchase_schemas.IssueCjTackingNumberRequest,
+        db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    """CJ 운송장 번호 발급"""
+    return await purchase_service.issue_cj_tracking_number(
+        Issue_tracking_number_request,
+        request,
+        db
+    )
+
+@purchase_router.post("/shipments/1688-order/create")
+async def create_1688_order(
+    request: Request,
+    create_order_request: purchase_schemas.Create1688OrderRequest,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    """1688 실제 주문 생성 (DTL 번호 기준)"""
+    return await purchase_service.create_1688_order(
+        create_order_request,
+        request,
+        db
+    )

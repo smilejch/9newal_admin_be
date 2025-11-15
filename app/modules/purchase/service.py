@@ -4,28 +4,32 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from sqlalchemy import and_
 from app.common import response as common_response
-from typing import Union, List
+from typing import Union
 from app.modules.purchase import models as purchase_models
 from app.modules.setting import models as set_models
 from sqlalchemy.orm import aliased
 from app.modules.auth import models as auth_models
 from app.modules.common import models as common_models
-from app.common.schemas import request as common_schemas
+from app.modules.common import schemas as common_schemas
+from app.common.schemas import request as common_request
 from app.common.response import ApiResponse, PageResponse, ResponseBuilder
 from sqlalchemy import func
 from app.utils.auth_util import get_authenticated_user_no
 from app.utils import com_code_util
+from fastapi.responses import FileResponse
+from app.utils.cj_logistics_util import request_cj_logistics_api
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from datetime import datetime
-from fastapi.responses import FileResponse
 import tempfile
 import os
+from datetime import datetime
+from app.utils import alibaba_1688_util
+from collections import defaultdict
 
 def fetch_order_mst_list(
     filter: purchase_schemas.OrderMstFilterRequest,
     request: Request,
-    pagination: common_schemas.PaginationRequest = Depends(),
+    pagination: common_request.PaginationRequest = Depends(),
     db: Session = Depends(get_db)
 ) -> ApiResponse[Union[PageResponse[purchase_schemas.OrderMstResponse], None]]:
 
@@ -172,7 +176,7 @@ def fetch_purchase_shipment_mst(
 def fetch_shipment_dtl_list(
         order_shipment_mst_no: Union[str, int],
         request: Request,
-        pagination: common_schemas.PaginationRequest,
+        pagination: common_request.PaginationRequest,
         db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
     """쉽먼트 마스터 번호로 특정 쉽먼트 DTL 조회 (MST, PACKING_DTL 정보 포함)"""
@@ -312,7 +316,7 @@ def fetch_shipment_dtl_list(
 def fetch_shipment_estimate_product_list(
         order_shipment_mst_no: Union[str, int],
         request: Request,
-        pagination: common_schemas.PaginationRequest,
+        pagination: common_request.PaginationRequest,
         db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
     """쉽먼트 마스터 번호로 견적 상품 정보 조회 (estimated_yn이 1일 때)"""
@@ -403,13 +407,15 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentDtl.coupang_option_id,
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
+            purchase_models.OrderShipmentDtl.purchase_order_number,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.box_name,
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
+            purchase_models.OrderShipmentPackingDtl.tracking_number,
 
             # ✅ PackingMst 컬럼 추가
-            purchase_models.OrderShipmentPackingMst.tracking_number
+            purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no
         ).join(
             purchase_models.OrderShipmentEstimate,
             purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
@@ -514,10 +520,12 @@ def fetch_shipment_estimate_product_list(
                 "transport_type": row.transport_type if row.transport_type else None,
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
+                "tracking_number": row.tracking_number if row.tracking_number else None,
+                "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
 
                 # Packing 정보
                 "box_name": row.box_name if row.box_name else None,
-                "tracking_number": row.tracking_number if row.tracking_number else None,
+                "order_shipment_packing_mst_no": row.order_shipment_packing_mst_no if row.order_shipment_packing_mst_no else None,
 
                 # 생성/수정 정보
                 "created_at": row.product_created_at,
@@ -546,7 +554,7 @@ def fetch_shipment_estimate_product_list(
 def fetch_shipment_dtl_all_list(
     order_mst_no: Union[str, int],
     request: Request,
-    pagination: common_schemas.PaginationRequest,
+    pagination: common_request.PaginationRequest,
     db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
     """발주서 마스터 번호로 모든 쉽먼트 DTL 조회 (MST, PACKING_DTL 정보 포함)"""
@@ -697,7 +705,7 @@ def fetch_shipment_dtl_all_list(
 def fetch_shipment_estimate_product_list_all(
         order_mst_no: Union[str, int],
         request: Request,
-        pagination: common_schemas.PaginationRequest,
+        pagination: common_request.PaginationRequest,
         db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
     """발주서 마스터 번호로 모든 견적 상품 정보 조회 (estimated_yn이 1인 모든 shipment의 견적 데이터)"""
@@ -801,13 +809,15 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.linked_open_uid,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
+            purchase_models.OrderShipmentDtl.purchase_order_number,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
             purchase_models.OrderShipmentPackingDtl.box_name,
+            purchase_models.OrderShipmentPackingDtl.tracking_number,
 
             # PackingMst 컬럼
-            purchase_models.OrderShipmentPackingMst.tracking_number,
+            purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
         ).join(
             purchase_models.OrderShipmentEstimate,
             purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
@@ -916,11 +926,13 @@ def fetch_shipment_estimate_product_list_all(
                 "transport_type": row.transport_type if row.transport_type else None,
                 "linked_open_uid": row.linked_open_uid if row.linked_open_uid else None,
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
+                "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
 
                 # Packing 정보
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
                 "box_name": row.box_name if row.box_name else None,
                 "tracking_number": row.tracking_number if row.tracking_number else None,
+                "order_shipment_packing_mst_no": row.order_shipment_packing_mst_no if row.order_shipment_packing_mst_no else None,
 
                 # 생성/수정 정보
                 "created_at": row.product_created_at,
@@ -948,7 +960,7 @@ def fetch_shipment_estimate_product_list_all(
 
 def fetch_estimate_mst_list(
         order_mst_no: Union[str, int],
-        pagination: common_schemas.PaginationRequest,
+        pagination: common_request.PaginationRequest,
         request: Request,
         db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
@@ -1641,15 +1653,6 @@ async def download_shipment_estimate_excel(
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
 
-
-from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-from fastapi.responses import FileResponse
-import tempfile
-import os
-from datetime import datetime
-
-
 async def download_shipment_estimate_product_all_excel(
         order_mst_no: Union[str, int],
         request: Request,
@@ -1723,10 +1726,12 @@ async def download_shipment_estimate_product_all_excel(
             purchase_models.OrderShipmentDtl.confirmed_quantity.label("dtl_confirmed_quantity"),
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
+            purchase_models.OrderShipmentDtl.purchase_order_number,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
-            purchase_models.OrderShipmentPackingDtl.box_name
+            purchase_models.OrderShipmentPackingDtl.box_name,
+            purchase_models.OrderShipmentPackingDtl.tracking_number
         ).join(
             purchase_models.OrderShipmentEstimate,
             purchase_models.OrderShipmentEstimateProduct.order_shipment_estimate_no == purchase_models.OrderShipmentEstimate.order_shipment_estimate_no
@@ -1789,6 +1794,7 @@ async def download_shipment_estimate_product_all_excel(
         # 헤더 정의
         headers = [
             "견적서 번호",
+            "구매번호",
             "발주번호",
             "물류센터",
             "상태",
@@ -1801,6 +1807,7 @@ async def download_shipment_estimate_product_all_excel(
             "포장수량",
             "박스명",
             "1688 운송장번호",
+            "CJ 운송장번호",
             "비고",
             "단가",
             "제품금액",
@@ -1823,96 +1830,107 @@ async def download_shipment_estimate_product_all_excel(
             cell.alignment = cell_alignment
             cell.border = thin_border
 
+            # 구매번호
+            cell = worksheet.cell(row=row_idx, column=2, value=row.purchase_order_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
             # 발주번호
-            cell = worksheet.cell(row=row_idx, column=2, value=row.order_number)
+            cell = worksheet.cell(row=row_idx, column=3, value=row.order_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 물류센터
-            cell = worksheet.cell(row=row_idx, column=3, value=row.center_name)
+            cell = worksheet.cell(row=row_idx, column=4, value=row.center_name)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 상태
-            cell = worksheet.cell(row=row_idx, column=4, value=row.order_shipment_mst_status_name)
+            cell = worksheet.cell(row=row_idx, column=5, value=row.order_shipment_mst_status_name)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 입고유형
-            cell = worksheet.cell(row=row_idx, column=5, value=row.transport_type)
+            cell = worksheet.cell(row=row_idx, column=6, value=row.transport_type)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 입고예정일
-            cell = worksheet.cell(row=row_idx, column=6, value=row.edd)
+            cell = worksheet.cell(row=row_idx, column=7, value=row.edd)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 상품번호(SKU ID)
-            cell = worksheet.cell(row=row_idx, column=7, value=row.sku_id)
+            cell = worksheet.cell(row=row_idx, column=8, value=row.sku_id)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 상품바코드
-            cell = worksheet.cell(row=row_idx, column=8, value=row.sku_barcode)
+            cell = worksheet.cell(row=row_idx, column=9, value=row.sku_barcode)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 상품이름
-            cell = worksheet.cell(row=row_idx, column=9, value=row.sku_name)
+            cell = worksheet.cell(row=row_idx, column=10, value=row.sku_name)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 확정수량
-            cell = worksheet.cell(row=row_idx, column=10, value=row.dtl_confirmed_quantity)
+            cell = worksheet.cell(row=row_idx, column=11, value=row.dtl_confirmed_quantity)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 포장수량
-            cell = worksheet.cell(row=row_idx, column=11, value=row.packing_quantity)
+            cell = worksheet.cell(row=row_idx, column=12, value=row.packing_quantity)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 박스명
-            cell = worksheet.cell(row=row_idx, column=12, value=row.box_name)
+            cell = worksheet.cell(row=row_idx, column=13, value=row.box_name)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 송장번호 (1688 운송장번호)
-            cell = worksheet.cell(row=row_idx, column=13, value=row.purchase_tracking_number)
+            cell = worksheet.cell(row=row_idx, column=14, value=row.purchase_tracking_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
             cell.fill = yellow_fill
 
+            # 송장번호 (cj 운송장번호)
+            cell = worksheet.cell(row=row_idx, column=15, value=row.tracking_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
+
             # 비고
-            cell = worksheet.cell(row=row_idx, column=14, value=row.remark)
+            cell = worksheet.cell(row=row_idx, column=16, value=row.remark)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 단가
             unit_price = float(row.product_unit_price) if row.product_unit_price else 0.0
-            cell = worksheet.cell(row=row_idx, column=15, value=unit_price)
+            cell = worksheet.cell(row=row_idx, column=17, value=unit_price)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 제품금액
             product_amount = float(row.product_product_total_amount) if row.product_product_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=16, value=product_amount)
+            cell = worksheet.cell(row=row_idx, column=18, value=product_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 포장금액
             package_amount = float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=17, value=package_amount)
+            cell = worksheet.cell(row=row_idx, column=19, value=package_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 총금액
             total_amount = float(row.product_total_amount) if row.product_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=18, value=total_amount)
+            cell = worksheet.cell(row=row_idx, column=20, value=total_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
@@ -2026,19 +2044,21 @@ async def upload_1688_tracking_number(
             try:
                 # 컬럼 매핑
                 estimate_id = row[0]  # 견적서 번호 (A열)
-                order_number = row[1]  # 발주번호 (B열)
-                center_name = row[2]  # 물류센터 (C열)
-                status = row[3]  # 상태 (D열)
-                transport_type = row[4]  # 입고유형 (E열)
-                edd = row[5]  # 입고예정일 (F열)
-                sku_id = row[6]  # 상품번호(SKU ID) (G열)
-                sku_barcode = row[7]  # 상품바코드 (H열)
-                sku_name = row[8]  # 상품이름 (I열)
-                confirmed_quantity = row[9]  # 확정수량 (J열)
-                packing_quantity = row[10]  # 포장수량 (K열)
-                box_name = row[11]  # 박스명 (L열)
-                tracking_number = row[12]  # 송장번호 (M열)
-                remark = row[13]  # 비고 (N열)
+                purchase_order_number = row[1]  # 구매번호 (B열)
+                order_number = row[2]  # 발주번호 (C열)
+                center_name = row[3]  # 물류센터 (D열)
+                status = row[4]  # 상태 (E열)
+                transport_type = row[5]  # 입고유형 (F열)
+                edd = row[6]  # 입고예정일 (G열)
+                sku_id = row[7]  # 상품번호(SKU ID) (H열)
+                sku_barcode = row[8]  # 상품바코드 (I열)
+                sku_name = row[9]  # 상품이름 (J열)
+                confirmed_quantity = row[10]  # 확정수량 (K열)
+                packing_quantity = row[11]  # 포장수량 (L열)
+                box_name = row[12]  # 박스명 (M열)
+                purchase_tracking_number = row[13]  # 1688 송장번호 (N열)
+                tracking_number = row[14]  # CJ 송장번호 (O열)
+                remark = row[15]  # 비고 (P열)
 
                 # 필수 필드 체크 (SKU ID와 발주번호는 필수)
                 if not sku_id or not order_number:
@@ -2052,7 +2072,7 @@ async def upload_1688_tracking_number(
                     continue
 
                 # 송장번호가 없으면 스킵
-                if not tracking_number or str(tracking_number).strip() == "":
+                if not purchase_tracking_number or str(purchase_tracking_number).strip() == "":
                     continue
 
                 # OrderShipmentDtl에서 해당 레코드 찾기
@@ -2079,7 +2099,7 @@ async def upload_1688_tracking_number(
                     continue
 
                 # purchase_tracking_number 업데이트
-                shipment_dtl.purchase_tracking_number = str(tracking_number).strip()
+                shipment_dtl.purchase_tracking_number = str(purchase_tracking_number).strip()
                 shipment_dtl.updated_by = user_no
                 shipment_dtl.updated_at = func.now()
 
@@ -2090,7 +2110,7 @@ async def upload_1688_tracking_number(
                     "row": row_idx,
                     "error": f"처리 중 오류: {str(e)}",
                     "sku_id": sku_id if 'sku_id' in locals() else None,
-                    "order_number": order_number if 'order_number' in locals() else None
+                    "order_number": purchase_tracking_number if 'order_number' in locals() else None
                 })
                 error_count += 1
                 continue
@@ -2125,4 +2145,399 @@ async def upload_1688_tracking_number(
         raise HTTPException(
             status_code=400,
             detail=f"1688 송장번호 업로드 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+async def issue_cj_tracking_number(
+        Issue_tracking_number_request: purchase_schemas.IssueCjTackingNumberRequest,
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """CJ 운송장 번호 발급 및 업데이트"""
+    try:
+        # 사용자 인증
+        user_no, company_no = get_authenticated_user_no(request)
+
+        order_shipment_packing_mst_nos = Issue_tracking_number_request.order_shipment_packing_mst_nos
+        success_count = 0
+        error_count = 0
+        error_details = []
+        issued_tracking_numbers = []
+
+        for packing_mst_no in order_shipment_packing_mst_nos:
+            try:
+                # 1. PackingMst 존재 확인
+                packing_mst = db.query(purchase_models.OrderShipmentPackingMst).filter(
+                    purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no == packing_mst_no,
+                    purchase_models.OrderShipmentPackingMst.del_yn == 0
+                ).first()
+
+                if not packing_mst:
+                    error_details.append({
+                        "order_shipment_packing_mst_no": packing_mst_no,
+                        "box_name": None,
+                        "error": "해당 포장 박스를 찾을 수 없습니다."
+                    })
+                    error_count += 1
+                    continue
+
+                # 2. 이미 운송장이 발급된 경우 스킵
+                if packing_mst.tracking_number:
+                    error_details.append({
+                        "order_shipment_packing_mst_no": packing_mst_no,
+                        "box_name": packing_mst.box_name,
+                        "error": f"이미 운송장이 발급되었습니다. (운송장번호: {packing_mst.tracking_number})"
+                    })
+                    error_count += 1
+                    continue
+
+                # 3. CJ API 호출하여 운송장 번호 발급
+                # CJ API 파라미터 구성
+                cj_params = {
+                    "box_name": packing_mst.box_name,
+                    "package_box_spec_cd": packing_mst.package_box_spec_cd,
+                    "company_no": packing_mst.company_no,
+                }
+
+                # CJ 물류 API 호출
+                cj_response = request_cj_logistics_api(
+                    db=db,
+                    process="/tracking/issue",  # 실제 CJ API 엔드포인트로 수정 필요
+                    params=cj_params
+                )
+
+                # 4. API 응답 검증 및 운송장 번호 추출
+                tracking_number = None
+
+                # ✅ RESULT_CD 체크
+                if not cj_response or cj_response.get("RESULT_CD") != "S":
+                    error_message = cj_response.get("RESULT_DETAIL", "알 수 없는 오류") if cj_response else "API 응답 없음"
+                    error_details.append({
+                        "order_shipment_packing_mst_no": packing_mst_no,
+                        "box_name": packing_mst.box_name,
+                        "error": f"CJ API 호출 실패: {error_message}",
+                        "cj_response": cj_response
+                    })
+                    error_count += 1
+                    continue
+
+                # ✅ INVC_NO 추출
+                if "DATA" in cj_response and cj_response["DATA"]:
+                    tracking_number = cj_response["DATA"].get("INVC_NO")
+
+                if not tracking_number:
+                    error_details.append({
+                        "order_shipment_packing_mst_no": packing_mst_no,
+                        "box_name": packing_mst.box_name,
+                        "error": "CJ API에서 운송장 번호(INVC_NO)를 받지 못했습니다.",
+                        "cj_response": cj_response
+                    })
+                    error_count += 1
+                    continue
+
+                # 5. PackingMst 업데이트
+                packing_mst.tracking_number = tracking_number
+                packing_mst.updated_by = user_no
+                packing_mst.updated_at = func.now()
+
+                # 6. 해당 PackingMst에 속한 PackingDtl 중 fail_yn이 0인 것만 업데이트
+                # ✅ 1단계: fail_yn이 0인 order_shipment_dtl_no를 서브쿼리로 추출
+                valid_dtl_nos_subquery = db.query(
+                    purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no
+                ).filter(
+                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
+                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0
+                ).subquery()
+
+                # ✅ 2단계: 서브쿼리 결과를 사용하여 업데이트 (join 없음)
+                updated_dtl_count = db.query(purchase_models.OrderShipmentPackingDtl).filter(
+                    purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == packing_mst_no,
+                    purchase_models.OrderShipmentPackingDtl.del_yn == 0,
+                    purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no.in_(valid_dtl_nos_subquery)  # 서브쿼리 사용
+                ).update(
+                    {
+                        "tracking_number": tracking_number,
+                        "updated_by": user_no,
+                        "updated_at": func.now()
+                    },
+                    synchronize_session=False
+                )
+
+                success_count += 1
+                issued_tracking_numbers.append({
+                    "order_shipment_packing_mst_no": packing_mst_no,
+                    "box_name": packing_mst.box_name,
+                    "tracking_number": tracking_number,
+                    "updated_dtl_count": updated_dtl_count
+                })
+
+            except Exception as e:
+                error_details.append({
+                    "order_shipment_packing_mst_no": packing_mst_no,
+                    "box_name": packing_mst.box_name if 'packing_mst' in locals() else None,
+                    "error": f"처리 중 오류: {str(e)}"
+                })
+                error_count += 1
+                continue
+
+        # 커밋 (성공 건이 있을 때만)
+        if success_count > 0:
+            db.commit()
+        else:
+            db.rollback()
+
+        # 응답 데이터 구성
+        response_data = {
+            "total_count": len(order_shipment_packing_mst_nos),
+            "success_count": success_count,
+            "error_count": error_count,
+            "issued_tracking_numbers": issued_tracking_numbers,
+            "error_details": error_details if error_details else None
+        }
+
+        if error_count > 0 and success_count > 0:
+            message = f"CJ 운송장 발급이 부분적으로 완료되었습니다. (성공: {success_count}건, 실패: {error_count}건)"
+        elif error_count > 0:
+            message = f"CJ 운송장 발급에 실패했습니다. (실패: {error_count}건)"
+        else:
+            message = f"CJ 운송장 발급이 완료되었습니다. (총 {success_count}건)"
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=message
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"CJ 운송장 발급 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+async def create_1688_order(
+        create_order_request: purchase_schemas.Create1688OrderRequest,
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """1688 실제 주문 생성 (판매자별로 분리)"""
+    try:
+        user_no, company_no = get_authenticated_user_no(request)
+        order_shipment_dtl_nos = create_order_request.order_shipment_dtl_nos
+        message = create_order_request.message
+
+        if not order_shipment_dtl_nos:
+            raise HTTPException(
+                status_code=400,
+                detail="쉽먼트 DTL 번호가 필요합니다."
+            )
+
+        # 1. 견적 상품 정보 조회
+        estimate_products = db.query(
+            purchase_models.OrderShipmentEstimateProduct,
+            purchase_models.OrderShipmentDtl,
+            set_models.SetSku
+        ).join(
+            purchase_models.OrderShipmentDtl,
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no ==
+            purchase_models.OrderShipmentDtl.order_shipment_dtl_no
+        ).join(
+            set_models.SetSku,
+            purchase_models.OrderShipmentDtl.sku_id == set_models.SetSku.sku_id
+        ).filter(
+            purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no.in_(order_shipment_dtl_nos),
+            purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
+            purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
+            purchase_models.OrderShipmentDtl.del_yn == 0,
+            purchase_models.OrderShipmentDtl.company_no == company_no,
+            set_models.SetSku.del_yn == 0,
+            set_models.SetSku.company_no == company_no
+        ).all()
+
+        if not estimate_products:
+            raise HTTPException(
+                status_code=400,
+                detail="주문 가능한 견적 상품이 없습니다."
+            )
+
+        # 2. ✅ openUid별로 그룹화
+        grouped_by_seller = defaultdict(lambda: {
+            "cargo_map": defaultdict(int),
+            "dtl_nos": []
+        })
+
+        for estimate_product, shipment_dtl, set_sku in estimate_products:
+            dtl_no = estimate_product.order_shipment_dtl_no
+
+            # SET_SKU 정보 우선 사용
+            offer_id = alibaba_1688_util.extract_offer_id_from_link(
+                set_sku.link or shipment_dtl.link
+            )
+            spec_id = set_sku.linked_spec_id or shipment_dtl.linked_spec_id
+            open_uid = set_sku.linked_open_uid or shipment_dtl.linked_open_uid
+            quantity = estimate_product.purchase_quantity
+
+            if not offer_id or not spec_id or not open_uid:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"1688 연동 정보가 없는 상품입니다. (SKU ID: {shipment_dtl.sku_id})"
+                )
+
+            # ✅ openUid별로 분류
+            seller_data = grouped_by_seller[open_uid]
+            cargo_key = (offer_id, spec_id)
+            seller_data["cargo_map"][cargo_key] += quantity
+            if dtl_no not in seller_data["dtl_nos"]:
+                seller_data["dtl_nos"].append(dtl_no)
+
+        # 3. ✅ 판매자별로 주문 생성
+        created_orders = []
+        total_success = 0
+        total_error = 0
+        error_details = []
+
+        for open_uid, seller_data in grouped_by_seller.items():
+            try:
+                # cargo_list 생성 (같은 판매자 상품만)
+                cargo_list = []
+                for (offer_id, spec_id), total_quantity in seller_data["cargo_map"].items():
+                    cargo_list.append(
+                        common_schemas.AlibabaFastCreateOrderCargo(
+                            offerId=offer_id,
+                            specId=spec_id,
+                            quantity=total_quantity
+                        )
+                    )
+
+                # 외부 주문 ID 생성
+                dtl_nos = seller_data["dtl_nos"]
+                sorted_dtl_nos = sorted(dtl_nos)
+                out_order_id = f"DTL_{open_uid[:8]}_{sorted_dtl_nos[0]}"
+
+                # 1688 API 호출
+                api_request = common_schemas.AlibabaFastCreateOrderRequest(
+                    cargoList=cargo_list,
+                    flow="general",
+                    message=message,
+                    tradeType="creditBuy",
+                    outOrderId=out_order_id
+                )
+
+                api_result = await alibaba_1688_util.create_order_1688(api_request)
+
+                # API 결과 확인
+                if not api_result or not api_result.get("success"):
+                    error_message = api_result.get("message", "알 수 없는 오류") if api_result else "API 응답 없음"
+                    translated_message = await alibaba_1688_util.translate_chinese_to_korean(error_message)
+
+                    error_details.append({
+                        "open_uid": open_uid,
+                        "dtl_nos": dtl_nos,
+                        "error": f"1688 주문 생성 실패: {translated_message}",
+                        "api_response": api_result
+                    })
+                    total_error += 1
+                    continue
+
+                # 주문 ID 추출
+                order_id = None
+                if "result" in api_result:
+                    order_id = api_result["result"].get("orderId")
+
+                if not order_id:
+                    error_details.append({
+                        "open_uid": open_uid,
+                        "dtl_nos": dtl_nos,
+                        "error": "1688에서 주문 ID를 받지 못했습니다.",
+                        "api_response": api_result
+                    })
+                    total_error += 1
+                    continue
+
+                # DB 업데이트 - 해당 판매자의 상품만
+                updated_estimate_count = db.query(purchase_models.OrderShipmentEstimateProduct).filter(
+                    purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no.in_(dtl_nos),
+                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
+                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0
+                ).update(
+                    {
+                        "purchase_order_number": order_id,
+                        "updated_by": user_no,
+                        "updated_at": func.now()
+                    },
+                    synchronize_session=False
+                )
+
+                updated_dtl_count = db.query(purchase_models.OrderShipmentDtl).filter(
+                    purchase_models.OrderShipmentDtl.order_shipment_dtl_no.in_(dtl_nos),
+                    purchase_models.OrderShipmentDtl.del_yn == 0
+                ).update(
+                    {
+                        "purchase_order_number": order_id,
+                        "updated_by": user_no,
+                        "updated_at": func.now()
+                    },
+                    synchronize_session=False
+                )
+
+                created_orders.append({
+                    "open_uid": open_uid,
+                    "order_1688_id": order_id,
+                    "dtl_nos": dtl_nos,
+                    "total_items": len(cargo_list),
+                    "total_quantity": sum(cargo.quantity for cargo in cargo_list),
+                    "updated_estimate_count": updated_estimate_count,
+                    "updated_dtl_count": updated_dtl_count
+                })
+
+                total_success += 1
+
+            except Exception as e:
+                error_details.append({
+                    "open_uid": open_uid,
+                    "dtl_nos": seller_data["dtl_nos"],
+                    "error": f"처리 중 오류: {str(e)}"
+                })
+                total_error += 1
+                continue
+
+        # 커밋
+        if total_success > 0:
+            db.commit()
+        else:
+            db.rollback()
+
+        # 응답 데이터 구성
+        response_data = {
+            "total_sellers": len(grouped_by_seller),
+            "success_count": total_success,
+            "error_count": total_error,
+            "created_orders": created_orders,
+            "error_details": error_details if error_details else None,
+            "total_dtl_count": len(order_shipment_dtl_nos)
+        }
+
+        if total_error > 0 and total_success > 0:
+            message_text = f"1688 주문이 부분적으로 생성되었습니다. (성공: {total_success}개 판매자, 실패: {total_error}개 판매자)"
+        elif total_error > 0:
+            message_text = f"1688 주문 생성에 실패했습니다. (실패: {total_error}개 판매자)"
+        else:
+            message_text = f"1688 주문이 생성되었습니다. (총 {total_success}개 판매자, {len(created_orders)}개 주문)"
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=message_text
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"1688 주문 생성 중 오류가 발생했습니다: {str(e)}"
         )

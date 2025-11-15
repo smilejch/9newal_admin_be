@@ -66,3 +66,17 @@ class CompanyProfileResponse(BaseModel):
     business_registration_number: Optional[str] = None
     address: Optional[str] = None
     address_dtl: Optional[str] = None
+
+# common/schemas.py 또는 module_common/schemas.py에 추가
+
+class AlibabaFastCreateOrderCargo(BaseModel):
+    offerId: str
+    specId: str
+    quantity: int
+
+class AlibabaFastCreateOrderRequest(BaseModel):
+    cargoList: List[AlibabaFastCreateOrderCargo]
+    flow: Optional[str] = "general"  # general, fenxiao
+    message: Optional[str] = None
+    tradeType: Optional[str] = None  # creditBuy, assureTrade, alipay
+    outOrderId: Optional[str] = None  # 외부 주문 ID (멱등성)

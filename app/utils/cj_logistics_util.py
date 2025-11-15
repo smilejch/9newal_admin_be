@@ -4,9 +4,16 @@ import time
 import os
 from typing import Dict
 from app.modules.common import models as common_models
-import datetime
+from datetime import datetime
 
 def request_cj_logistics_api(db: Session, process: str, params: Dict = None):
+
+    # 고정 값으로 우선 처리
+    process = 'ReqInvcNo'
+    params = {
+        "CLNTNUM": os.getenv('CJ_LOGISTICS_CUST_ID')
+    }
+
     time.sleep(1)
     token = get_cj_logistics_token(db)
 

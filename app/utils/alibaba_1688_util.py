@@ -4,6 +4,9 @@ from app.modules.common import schemas as common_schemas
 import json
 from collections import defaultdict
 import asyncio
+from typing import Optional
+import re
+from googletrans import Translator
 
 
 async def call_1688_api(api_endpoint, params=None):
@@ -109,3 +112,78 @@ async def create_order_preview(request: common_schemas.AlibabaCreateOrderPreview
         })
 
     return results
+
+async def create_order_1688(request: common_schemas.AlibabaFastCreateOrderRequest):
+    """1688 빠른 주문 생성 API"""
+    cfg = ALIBABA_1688_API_CONFIG._get_random_account_config()
+
+    # addressParam 구조 (fastCreateOrder용 - addressId, districtCode 제거)
+    address_obj = {
+        "fullName": cfg["full_name"],
+        "mobile": cfg["mobile"],
+        "phone": cfg["phone"],
+        "postCode": cfg["post_code"],
+        "cityText": cfg["city_text"],
+        "provinceText": cfg["province_text"],
+        "areaText": cfg["area_text"],  # districtText → areaText로 변경
+        "townText": cfg["town_text"],
+        "address": cfg["address"]
+    }
+    address_json = json.dumps(address_obj, ensure_ascii=False)
+
+    # cargoParamList 구성
+    cargo_list = []
+    for item in request.cargoList:
+        obj = {
+            "offerId": item.offerId,
+            "specId": item.specId,
+            "quantity": item.quantity
+        }
+        cargo_list.append({k: v for k, v in obj.items() if v is not None})
+
+    cargo_json = json.dumps(cargo_list, ensure_ascii=False)
+
+    # 파라미터 구성
+    params = {
+        "flow": request.flow or "general",  # general(일반), fenxiao(분판)
+        "message": request.message or cfg["message"],
+        "addressParam": address_json,
+        "cargoParamList": cargo_json,
+    }
+
+    # 선택적 파라미터
+    if request.tradeType:
+        params["tradeType"] = request.tradeType
+    if request.outOrderId:
+        params["outOrderId"] = request.outOrderId
+
+    # API 호출
+    result = await call_1688_api(
+        "com.alibaba.trade/alibaba.trade.fastCreateOrder",
+        params
+    )
+
+    return result
+
+def extract_offer_id_from_link(link: str) -> Optional[str]:
+    """1688 링크에서 offer_id 추출"""
+    if not link:
+        return None
+
+    # /offer/{offer_id}.html 패턴 매칭
+    pattern = r'/offer/(\d+)\.html'
+    match = re.search(pattern, link)
+    if match:
+        return match.group(1)
+    return None
+
+async def translate_chinese_to_korean(text: str) -> str:
+    """중국어를 한국어로 번역"""
+    try:
+        translator = Translator()
+        result = await translator.translate(text, src='zh-cn', dest='ko')
+        return result.text
+    except Exception as e:
+        print(f"번역 실패: {str(e)}")
+
+        return text  # 번역 실패 시 원본 텍스트 반환
