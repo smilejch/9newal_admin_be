@@ -25,6 +25,7 @@ import os
 from datetime import datetime
 from app.utils import alibaba_1688_util
 from collections import defaultdict
+from urllib.parse import quote
 
 def fetch_order_mst_list(
     filter: purchase_schemas.OrderMstFilterRequest,
@@ -1294,10 +1295,6 @@ def confirm_estimate_deposit(
             status_code=400,
             detail=f"견적서 입금확인 처리 중 오류가 발생했습니다: {str(e)}"
         )
-
-
-from urllib.parse import quote
-
 
 async def download_shipment_dtl_excel(
         order_mst_no: Union[str, int],

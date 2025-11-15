@@ -7,6 +7,7 @@ import asyncio
 from typing import Optional
 import re
 from googletrans import Translator
+from typing import List
 
 
 async def call_1688_api(api_endpoint, params=None):
@@ -112,12 +113,11 @@ async def create_order_preview(request: common_schemas.AlibabaCreateOrderPreview
         })
 
     return results
-
-async def create_order_1688(request: common_schemas.AlibabaFastCreateOrderRequest):
-    """1688 빠른 주문 생성 API"""
+async def create_order_1688_batch(requests: List[common_schemas.AlibabaFastCreateOrderRequest]):
+    """1688 빠른 주문 생성 API - 병렬 처리"""
     cfg = ALIBABA_1688_API_CONFIG._get_random_account_config()
 
-    # addressParam 구조 (fastCreateOrder용 - addressId, districtCode 제거)
+    # addressParam 구조 (모든 요청에 공통으로 사용)
     address_obj = {
         "fullName": cfg["full_name"],
         "mobile": cfg["mobile"],
@@ -125,45 +125,67 @@ async def create_order_1688(request: common_schemas.AlibabaFastCreateOrderReques
         "postCode": cfg["post_code"],
         "cityText": cfg["city_text"],
         "provinceText": cfg["province_text"],
-        "areaText": cfg["area_text"],  # districtText → areaText로 변경
+        "areaText": cfg["area_text"],
         "townText": cfg["town_text"],
         "address": cfg["address"]
     }
     address_json = json.dumps(address_obj, ensure_ascii=False)
 
-    # cargoParamList 구성
-    cargo_list = []
-    for item in request.cargoList:
-        obj = {
-            "offerId": item.offerId,
-            "specId": item.specId,
-            "quantity": item.quantity
+    # 모든 API 호출을 동시에 실행
+    tasks = []
+    for req in requests:
+        # cargoParamList 구성
+        cargo_list = []
+        for item in req.cargoList:
+            obj = {
+                "offerId": item.offerId,
+                "specId": item.specId,
+                "quantity": item.quantity
+            }
+            cargo_list.append({k: v for k, v in obj.items() if v is not None})
+
+        cargo_json = json.dumps(cargo_list, ensure_ascii=False)
+
+        # 파라미터 구성
+        params = {
+            "flow": req.flow or "general",
+            "message": req.message or cfg["message"],
+            "addressParam": address_json,
+            "cargoParamList": cargo_json,
         }
-        cargo_list.append({k: v for k, v in obj.items() if v is not None})
 
-    cargo_json = json.dumps(cargo_list, ensure_ascii=False)
+        # 선택적 파라미터
+        if req.tradeType:
+            params["tradeType"] = req.tradeType
+        if req.outOrderId:
+            params["outOrderId"] = req.outOrderId
 
-    # 파라미터 구성
-    params = {
-        "flow": request.flow or "general",  # general(일반), fenxiao(분판)
-        "message": request.message or cfg["message"],
-        "addressParam": address_json,
-        "cargoParamList": cargo_json,
-    }
+        # 코루틴을 생성하고 메타데이터와 함께 저장
+        task = call_1688_api(
+            "com.alibaba.trade/alibaba.trade.fastCreateOrder",
+            params
+        )
+        tasks.append((req, task))
 
-    # 선택적 파라미터
-    if request.tradeType:
-        params["tradeType"] = request.tradeType
-    if request.outOrderId:
-        params["outOrderId"] = request.outOrderId
+    # 모든 API 호출을 동시에 실행
+    api_results = await asyncio.gather(*[task for _, task in tasks])
 
-    # API 호출
-    result = await call_1688_api(
-        "com.alibaba.trade/alibaba.trade.fastCreateOrder",
-        params
-    )
+    # 결과를 원하는 형태로 매핑
+    results = []
+    for i, (req, _) in enumerate(tasks):
+        results.append({
+            "request": req,
+            "result": api_results[i]
+        })
 
-    return result
+    return results
+
+
+# 기존 단일 요청 함수도 유지 (하위 호환성)
+async def create_order_1688(request: common_schemas.AlibabaFastCreateOrderRequest):
+    """1688 빠른 주문 생성 API - 단일 요청"""
+    results = await create_order_1688_batch([request])
+    return results[0]["result"]
 
 def extract_offer_id_from_link(link: str) -> Optional[str]:
     """1688 링크에서 offer_id 추출"""
