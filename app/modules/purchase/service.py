@@ -681,6 +681,7 @@ def fetch_shipment_dtl_all_list(
                 "package_box_spec_cd": packing_mst.package_box_spec_cd if packing_mst else None,
 
                 # PACKING_DTL 생성/수정 정보
+                "tracking_number": packing_dtl.tracking_number if packing_dtl else None,
                 "packing_dtl_created_at": packing_dtl.created_at if packing_dtl else None,
                 "packing_dtl_created_by": packing_dtl.created_by if packing_dtl else None,
                 "packing_dtl_updated_at": packing_dtl.updated_at if packing_dtl else None,
@@ -1293,7 +1294,10 @@ def confirm_estimate_deposit(
             status_code=400,
             detail=f"견적서 입금확인 처리 중 오류가 발생했습니다: {str(e)}"
         )
-    
+
+
+from urllib.parse import quote
+
 
 async def download_shipment_dtl_excel(
         order_mst_no: Union[str, int],
@@ -1320,7 +1324,7 @@ async def download_shipment_dtl_excel(
             set_models.SetCenter.del_yn == 0
         ).scalar_subquery()
 
-        # 데이터 조회 (fetch_shipment_dtl_all_list와 유사)
+        # 데이터 조회
         query = db.query(
             purchase_models.OrderShipmentMst,
             purchase_models.OrderShipmentDtl,
@@ -1391,11 +1395,14 @@ async def download_shipment_dtl_excel(
             "확정수량",
             "포장수량",
             "박스명",
-            "송장번호"
+            "1688 송장번호",
+            "CJ 송장번호",
         ]
 
         # 공통코드
-        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD", db)
+        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD",
+                                                                                       db)
+
         # 헤더 작성
         for col_idx, header in enumerate(headers, start=1):
             cell = worksheet.cell(row=1, column=col_idx, value=header)
@@ -1469,21 +1476,16 @@ async def download_shipment_dtl_excel(
             cell.alignment = cell_alignment
             cell.border = thin_border
 
+            # CJ 운송장번호
+            tracking_number = packing_dtl.tracking_number if packing_dtl else None
+            cell = worksheet.cell(row=row_idx, column=13, value=tracking_number)
+            cell.alignment = cell_alignment
+            cell.border = thin_border
+
         # 열 너비 자동 조정
         column_widths = {
-            1: 15,
-            2: 12,
-            3: 20,
-            4: 20,
-            5: 20,
-            6: 40,
-            7: 12,
-            8: 12,
-            9: 20,
-            10: 50,
-            11: 30,
-            12: 12,
-            13: 12,
+            1: 15, 2: 12, 3: 20, 4: 20, 5: 20, 6: 40,
+            7: 12, 8: 12, 9: 20, 10: 50, 11: 30, 12: 12, 13: 12,
         }
 
         for col, width in column_widths.items():
@@ -1501,12 +1503,17 @@ async def download_shipment_dtl_excel(
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"발주구매정보_{order_mst_no}_{current_time}.xlsx"
 
-        return FileResponse(
+        encoded_filename = quote(filename)
+
+        response = FileResponse(
             path=temp_path,
-            filename=filename,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            background=None  # 파일 전송 후 자동 삭제
+            background=None
         )
+
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+        return response
 
     except HTTPException:
         raise
@@ -1526,7 +1533,7 @@ async def download_shipment_estimate_excel(
         request: Request,
         db: Session
 ) -> FileResponse:
-    """Growth 발주 구매 정보 엑셀 다운로드 - 새 파일 생성"""
+    """견적 리스트 엑셀 다운로드"""
     try:
         # 발주서 마스터 존재 확인
         existing_order_mst = db.query(purchase_models.OrderMst).filter(
@@ -1540,7 +1547,7 @@ async def download_shipment_estimate_excel(
                 detail="해당 발주서를 찾을 수 없습니다."
             )
 
-        # 데이터 조회 (fetch_shipment_dtl_all_list와 유사)
+        # 데이터 조회
         query = db.query(
             purchase_models.OrderShipmentEstimate
         ).filter(
@@ -1558,19 +1565,16 @@ async def download_shipment_estimate_excel(
                 detail="다운로드할 데이터가 없습니다."
             )
 
-        # 새 워크북 생성
+        # 워크북 생성 및 스타일 정의
         workbook = Workbook()
         worksheet = workbook.active
         worksheet.title = "견적 리스트"
 
-        # 스타일 정의
         header_font = Font(bold=True, size=11, color="FFFFFF")
         header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
         header_alignment = Alignment(horizontal="center", vertical="center")
-
         cell_alignment = Alignment(horizontal="left", vertical="center")
         center_alignment = Alignment(horizontal="center", vertical="center")
-
         thin_border = Border(
             left=Side(style='thin'),
             right=Side(style='thin'),
@@ -1578,15 +1582,8 @@ async def download_shipment_estimate_excel(
             bottom=Side(style='thin')
         )
 
-        headers = [
-            "견적서 번호",
-            "견적일자",
-            "견적총액"
-        ]
+        headers = ["견적서 번호", "견적일자", "견적총액"]
 
-        # 공통코드
-        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD",
-                                                                                       db)
         # 헤더 작성
         for col_idx, header in enumerate(headers, start=1):
             cell = worksheet.cell(row=1, column=col_idx, value=header)
@@ -1596,37 +1593,25 @@ async def download_shipment_estimate_excel(
             cell.border = thin_border
 
         # 데이터 작성
-        for row_idx, (estimate) in enumerate(results, start=2):
-            # 견적번호
-            cell = worksheet.cell(row=row_idx, column=1, value=estimate.estimate_id)
-            cell.alignment = cell_alignment
-            cell.border = thin_border
+        for row_idx, estimate in enumerate(results, start=2):
+            worksheet.cell(row=row_idx, column=1, value=estimate.estimate_id).alignment = cell_alignment
+            worksheet.cell(row=row_idx, column=1).border = thin_border
 
-            # 견적일자
-            cell = worksheet.cell(row=row_idx, column=2, value=estimate.estimate_date)
-            cell.alignment = center_alignment
-            cell.border = thin_border
+            worksheet.cell(row=row_idx, column=2, value=estimate.estimate_date).alignment = center_alignment
+            worksheet.cell(row=row_idx, column=2).border = thin_border
 
-            # 견적총액
-            cell = worksheet.cell(row=row_idx, column=3, value=estimate.estimate_total_amount)
-            cell.alignment = cell_alignment
-            cell.border = thin_border
+            worksheet.cell(row=row_idx, column=3, value=estimate.estimate_total_amount).alignment = cell_alignment
+            worksheet.cell(row=row_idx, column=3).border = thin_border
 
-        # 열 너비 자동 조정
-        column_widths = {
-            1: 15,
-            2: 12,
-            3: 20
-        }
-
-        for col, width in column_widths.items():
-            worksheet.column_dimensions[worksheet.cell(row=1, column=col).column_letter].width = width
+        # 열 너비 설정
+        worksheet.column_dimensions['A'].width = 15
+        worksheet.column_dimensions['B'].width = 12
+        worksheet.column_dimensions['C'].width = 20
 
         # 임시 파일 생성
         with tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx') as tmp_file:
             temp_path = tmp_file.name
 
-        # 워크북 저장
         workbook.save(temp_path)
         workbook.close()
 
@@ -1634,17 +1619,23 @@ async def download_shipment_estimate_excel(
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"견적리스트_{order_mst_no}_{current_time}.xlsx"
 
-        return FileResponse(
+        # ✅ 한글 파일명 인코딩
+        encoded_filename = quote(filename)
+
+        # ✅ FileResponse 반환
+        response = FileResponse(
             path=temp_path,
-            filename=filename,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-            background=None  # 파일 전송 후 자동 삭제
+            background=None
         )
+
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+        return response
 
     except HTTPException:
         raise
     except Exception as e:
-        # 임시 파일 정리
         if 'temp_path' in locals() and os.path.exists(temp_path):
             os.unlink(temp_path)
 
@@ -1972,13 +1963,19 @@ async def download_shipment_estimate_product_all_excel(
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"견적상품목록_{order_mst_no}_{current_time}.xlsx"
 
-        return FileResponse(
+        # ✅ 한글 파일명 인코딩
+        encoded_filename = quote(filename)
+
+        # ✅ FileResponse 반환
+        response = FileResponse(
             path=temp_path,
-            filename=filename,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             background=None
         )
 
+        response.headers["Content-Disposition"] = f"attachment; filename*=UTF-8''{encoded_filename}"
+
+        return response
     except HTTPException:
         raise
     except Exception as e:

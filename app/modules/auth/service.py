@@ -112,7 +112,7 @@ def login_user(
     if not user or not verify_password(login_data.user_password, user.user_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid user ID or password",
+            detail="아이디 및 비밀번호를 확인해주세요.",
             headers={"WWW-Authenticate": "Bearer"}
         )
 
