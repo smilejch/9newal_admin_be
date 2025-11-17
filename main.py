@@ -11,13 +11,51 @@ from app.modules.setting.router import setting_router
 from app.modules.common.router import common_router
 from app.modules.purchase.router import purchase_router
 from app.core.exceptions import setup_global_exception_handlers
+from app.scheduler import scheduler_1688
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from contextlib import asynccontextmanager
 import platform
 import os
+
+# 스케줄러 인스턴스 생성
+scheduler = AsyncIOScheduler()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    print("Application starting...")
+
+    db = next(get_db())
+    try:
+        ALIBABA_1688_API_CONFIG.load_all_configs(db)
+        print("✅ 1688 API config loaded")
+    finally:
+        db.close()
+
+    # 스케줄러 작업 등록
+    scheduler.add_job(
+        func=scheduler_1688.sync_1688_order_status, # 1688 구매 상태 배치
+        trigger=CronTrigger(hour=0, minute=22, second=30), # 매일 자정 0시 0분 0초
+        #trigger=IntervalTrigger(seconds=3000),  # N초마다 실행
+        id='sync_1688_orders',
+        name='1688 주문 동기화'
+    )
+
+    scheduler.start()
+    print("APScheduler started")
+
+    yield
+
+    print("Application shutting down...")
+    scheduler.shutdown()
+
 
 def create_app():
     app = FastAPI(
         title="ADMIN 9newall Backend API",
-        dependencies=[Depends(get_current_user_global)]  # 조건부 글로벌 적용
+        dependencies=[Depends(get_current_user_global)],  # 조건부 글로벌 적용
+        lifespan=lifespan
     )
 
     setup_global_exception_handlers(app)
@@ -70,12 +108,3 @@ def create_app():
 
 
 app = create_app()
-
-@app.on_event("startup")
-async def startup_event():
-    db = next(get_db())
-    try:
-        ALIBABA_1688_API_CONFIG.load_all_configs(db)
-    finally:
-        db.close()
-
