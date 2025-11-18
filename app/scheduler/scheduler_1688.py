@@ -1,7 +1,7 @@
 # app/scheduler/scheduler_1688.py
 from app.core.database import get_db
 from app.core.config_1688 import ALIBABA_1688_API_CONFIG
-from app.modules.purchase.models import OrderShipmentDtl
+from app.modules.purchase.models import OrderShipmentDtl, OrderShipmentEstimate, OrderMst, OrderShipmentMst
 from datetime import datetime
 from sqlalchemy import and_, distinct
 import httpx
@@ -36,8 +36,26 @@ async def sync_1688_order_status():
         # 2. 각 고유 주문 번호에 대해 한 번씩만 API 호출
         for order_number in order_numbers:
             try:
-                # 3. 1688 API 호출
-                logistics_info = await get_1688_logistics_info(order_number)
+                # 2-1. 해당 주문번호의 account_info_no_1688 조회
+                account_no = db.query(OrderShipmentEstimate.account_info_no_1688).join(
+                    OrderMst, OrderShipmentEstimate.order_mst_no == OrderMst.order_mst_no
+                ).join(
+                    OrderShipmentMst, OrderMst.order_mst_no == OrderShipmentMst.order_mst_no
+                ).join(
+                    OrderShipmentDtl, OrderShipmentMst.order_shipment_mst_no == OrderShipmentDtl.order_shipment_mst_no
+                ).filter(
+                    and_(
+                        OrderShipmentDtl.purchase_order_number == order_number,
+                        OrderShipmentDtl.del_yn == 0,
+                        OrderShipmentEstimate.del_yn == 0
+                    )
+                ).first()
+
+                # account_no가 있으면 해당 계정 사용, 없으면 None (랜덤)
+                account_info_no = account_no[0] if account_no else None
+
+                # 3. 1688 API 호출 (계정 번호 전달)
+                logistics_info = await get_1688_logistics_info(order_number, account_info_no)
 
                 if logistics_info and logistics_info.get('success'):
                     result = logistics_info.get('result', [])
@@ -45,13 +63,13 @@ async def sync_1688_order_status():
                     if result and len(result) > 0:
                         logistics_data = result[0]
 
-                        # 4. 운송장 번호 추출
+                        # 4. 운송장 번호 및 배송 상태 추출
                         tracking_number = logistics_data.get('logisticsId')
                         delivery_status = logistics_data.get('status')
                         logistics_company_id = logistics_data.get('logisticsCompanyId')
 
                         if tracking_number:
-                            # 5. 해당 구매번호를 가진 모든 DTL 업데이트
+                            # 5. 해당 구매번호를 가진 모든 DTL 업데이트 (운송장번호 + 배송상태)
                             updated_count = db.query(OrderShipmentDtl).filter(
                                 and_(
                                     OrderShipmentDtl.purchase_order_number == order_number,
@@ -59,29 +77,20 @@ async def sync_1688_order_status():
                                 )
                             ).update({
                                 'purchase_tracking_number': tracking_number,
+                                'delivery_status': delivery_status,
                                 'updated_at': datetime.now()
                             }, synchronize_session=False)
 
-                            print(f"[{datetime.now()}] 주문번호 {order_number}: 운송장번호 업데이트 완료 ({updated_count}건) - {tracking_number}")
-
-                            # 6. 배송 상태 출력 (테이블 구조 확정 후 저장 필요)
-                            print(f"[{datetime.now()}] 배송상태: {delivery_status}, 물류사ID: {logistics_company_id}")
-
-                            # 배송 상태 저장 로직 구현 필요
-                            # 배송 상태 코드:
-                            # - SIGN: 서명완료(배송완료)
-                            # - TRANSPORT: 운송중
-                            # - 기타 상태는 1688 API 문서 참조
-                            #
-                            # 배송 상태 테이블 구조 확정 후:
-                            # .update({'delivery_status': delivery_status, 'logistics_company_id': logistics_company_id})
+                            print(f"[{datetime.now()}] 주문번호 {order_number}: 업데이트 완료 ({updated_count}건)")
+                            print(f"[{datetime.now()}] - 운송장번호: {tracking_number}")
+                            print(f"[{datetime.now()}] - 배송상태: {delivery_status}")
+                            print(f"[{datetime.now()}] - 물류사ID: {logistics_company_id}")
 
                             success_count += 1
                     else:
                         print(f"[{datetime.now()}] 주문번호 {order_number}: 물류 정보 없음")
 
                 elif logistics_info and logistics_info.get('errorCode') == '500_2':
-                    # 주문이 아직 발송되지 않음
                     print(f"[{datetime.now()}] 주문번호 {order_number}: 아직 발송되지 않음")
                     not_shipped_count += 1
 
@@ -96,7 +105,7 @@ async def sync_1688_order_status():
                 fail_count += 1
                 continue
 
-        # 7. 변경사항 커밋
+        # 6. 변경사항 커밋
         db.commit()
         print(f"[{datetime.now()}] 1688 주문 상태 동기화 완료")
         print(f"[{datetime.now()}] 성공: {success_count}건, 미발송: {not_shipped_count}건, 실패: {fail_count}건")
@@ -108,19 +117,20 @@ async def sync_1688_order_status():
         db.close()
 
 
-async def get_1688_logistics_info(order_id: str) -> dict:
+async def get_1688_logistics_info(order_id: str, account_no: int = None) -> dict:
     """
     1688 물류 정보 조회 API 호출
 
     Args:
         order_id: 1688 구매 주문 번호
+        account_no: 1688 계정 번호 (없으면 랜덤 선택)
 
     Returns:
         dict: 물류 정보 응답
     """
     try:
-        # 1. 랜덤 계정 설정 가져오기
-        config = ALIBABA_1688_API_CONFIG._get_random_account_config()
+        # 1. 계정 설정 가져오기 (account_no가 있으면 해당 계정, 없으면 랜덤)
+        config = ALIBABA_1688_API_CONFIG._get_account_config(account_no)
 
         # 2. API 엔드포인트 구성
         api_endpoint = "com.alibaba.logistics/alibaba.trade.getLogisticsInfos.buyerView"
@@ -164,7 +174,7 @@ async def get_1688_logistics_info(order_id: str) -> dict:
         else:
             error_code = result.get('errorCode', '')
             error_msg = result.get('errorMessage', '')
-            if error_code != '500_2':  # "아직 발송 전" 에러는 자세히 출력 안 함
+            if error_code != '500_2':
                 print(f"[{datetime.now()}] 주문번호 {order_id} API 오류 응답: [{error_code}] {error_msg}")
 
         return result
@@ -197,8 +207,25 @@ async def sync_1688_order_status_manual(order_id: str, db):
         if not orders:
             return {'success': False, 'message': f'주문번호 {order_id}를 찾을 수 없습니다'}
 
+        # account_info_no_1688 조회
+        account_no = db.query(OrderShipmentEstimate.account_info_no_1688).join(
+            OrderMst, OrderShipmentEstimate.order_mst_no == OrderMst.order_mst_no
+        ).join(
+            OrderShipmentMst, OrderMst.order_mst_no == OrderShipmentMst.order_mst_no
+        ).join(
+            OrderShipmentDtl, OrderShipmentMst.order_shipment_mst_no == OrderShipmentDtl.order_shipment_mst_no
+        ).filter(
+            and_(
+                OrderShipmentDtl.purchase_order_number == order_id,
+                OrderShipmentDtl.del_yn == 0,
+                OrderShipmentEstimate.del_yn == 0
+            )
+        ).first()
+
+        account_info_no = account_no[0] if account_no else None
+
         # 1688 API 호출
-        logistics_info = await get_1688_logistics_info(order_id=order_id)
+        logistics_info = await get_1688_logistics_info(order_id=order_id, account_no=account_info_no)
 
         if logistics_info and logistics_info.get('success'):
             result = logistics_info.get('result', [])

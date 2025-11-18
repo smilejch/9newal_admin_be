@@ -48,6 +48,23 @@ class ALIBABA_1688_API_CONFIG:
         return config
 
     @classmethod
+    def _get_account_config(cls, account_no=None):
+        """계정 설정 가져오기 (account_no 없으면 랜덤)"""
+        if not cls._all_configs:
+            raise ValueError("설정이 로드되지 않았습니다. load_all_configs()를 먼저 호출하세요.")
+
+        if account_no is None:
+            # 랜덤 선택
+            account_no = random.choice(list(cls._all_configs.keys()))
+        elif account_no not in cls._all_configs:
+            raise ValueError(f"계정 번호 {account_no}를 찾을 수 없습니다.")
+
+        config = cls._all_configs[account_no].copy()
+        config['account_no'] = account_no
+
+        return config
+
+    @classmethod
     def generate_signature(cls, url_path, params, config):
 
         param_pairs = []
