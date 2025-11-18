@@ -26,6 +26,9 @@ from datetime import datetime
 from app.utils import alibaba_1688_util
 from collections import defaultdict
 from urllib.parse import quote
+from openpyxl import load_workbook
+from fastapi import UploadFile
+import io
 
 def fetch_order_mst_list(
     filter: purchase_schemas.OrderMstFilterRequest,
@@ -409,6 +412,7 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
             purchase_models.OrderShipmentDtl.purchase_order_number,
+            purchase_models.OrderShipmentDtl.delivery_status,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.box_name,
@@ -523,6 +527,7 @@ def fetch_shipment_estimate_product_list(
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
                 "tracking_number": row.tracking_number if row.tracking_number else None,
                 "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
+                "delivery_status": row.delivery_status if row.delivery_status else None,
 
                 # Packing 정보
                 "box_name": row.box_name if row.box_name else None,
@@ -812,6 +817,7 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentDtl.linked_open_uid,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
             purchase_models.OrderShipmentDtl.purchase_order_number,
+            purchase_models.OrderShipmentDtl.delivery_status,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
@@ -929,6 +935,7 @@ def fetch_shipment_estimate_product_list_all(
                 "linked_open_uid": row.linked_open_uid if row.linked_open_uid else None,
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
                 "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
+                "delivery_status": row.delivery_status if row.delivery_status else None,
 
                 # Packing 정보
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
@@ -1715,6 +1722,7 @@ async def download_shipment_estimate_product_all_excel(
             purchase_models.OrderShipmentDtl.transport_type,
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
             purchase_models.OrderShipmentDtl.purchase_order_number,
+            purchase_models.OrderShipmentDtl.delivery_status,
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
@@ -1786,6 +1794,7 @@ async def download_shipment_estimate_product_all_excel(
             "발주번호",
             "물류센터",
             "상태",
+            "배송상태",
             "입고유형",
             "입고예정일",
             "상품번호(SKU ID)",
@@ -1838,87 +1847,93 @@ async def download_shipment_estimate_product_all_excel(
             cell.alignment = center_alignment
             cell.border = thin_border
 
+            # 배송상태
+            cell = worksheet.cell(row=row_idx, column=6, value=row.delivery_status)
+            cell.alignment = center_alignment
+            cell.border = thin_border
+
             # 입고유형
-            cell = worksheet.cell(row=row_idx, column=6, value=row.transport_type)
+            cell = worksheet.cell(row=row_idx, column=7, value=row.transport_type)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 입고예정일
-            cell = worksheet.cell(row=row_idx, column=7, value=row.edd)
+            cell = worksheet.cell(row=row_idx, column=8, value=row.edd)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 상품번호(SKU ID)
-            cell = worksheet.cell(row=row_idx, column=8, value=row.sku_id)
+            cell = worksheet.cell(row=row_idx, column=9, value=row.sku_id)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 상품바코드
-            cell = worksheet.cell(row=row_idx, column=9, value=row.sku_barcode)
+            cell = worksheet.cell(row=row_idx, column=10, value=row.sku_barcode)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 상품이름
-            cell = worksheet.cell(row=row_idx, column=10, value=row.sku_name)
+            cell = worksheet.cell(row=row_idx, column=11, value=row.sku_name)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 확정수량
-            cell = worksheet.cell(row=row_idx, column=11, value=row.dtl_confirmed_quantity)
+            cell = worksheet.cell(row=row_idx, column=12, value=row.dtl_confirmed_quantity)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 포장수량
-            cell = worksheet.cell(row=row_idx, column=12, value=row.packing_quantity)
+            cell = worksheet.cell(row=row_idx, column=13, value=row.packing_quantity)
             cell.alignment = center_alignment
             cell.border = thin_border
 
             # 박스명
-            cell = worksheet.cell(row=row_idx, column=13, value=row.box_name)
+            cell = worksheet.cell(row=row_idx, column=14, value=row.box_name)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 송장번호 (1688 운송장번호)
-            cell = worksheet.cell(row=row_idx, column=14, value=row.purchase_tracking_number)
+            cell = worksheet.cell(row=row_idx, column=15, value=row.purchase_tracking_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
-            cell.fill = yellow_fill
+            if row.order_shipment_mst_status_cd == "PAYMENT_COMPLETED":
+                cell.fill = yellow_fill
 
             # 송장번호 (cj 운송장번호)
-            cell = worksheet.cell(row=row_idx, column=15, value=row.tracking_number)
+            cell = worksheet.cell(row=row_idx, column=16, value=row.tracking_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
 
             # 비고
-            cell = worksheet.cell(row=row_idx, column=16, value=row.remark)
+            cell = worksheet.cell(row=row_idx, column=17, value=row.remark)
             cell.alignment = cell_alignment
             cell.border = thin_border
 
             # 단가
             unit_price = float(row.product_unit_price) if row.product_unit_price else 0.0
-            cell = worksheet.cell(row=row_idx, column=17, value=unit_price)
+            cell = worksheet.cell(row=row_idx, column=18, value=unit_price)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 제품금액
             product_amount = float(row.product_product_total_amount) if row.product_product_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=18, value=product_amount)
+            cell = worksheet.cell(row=row_idx, column=19, value=product_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 포장금액
             package_amount = float(row.package_vinyl_spec_total_amount) if row.package_vinyl_spec_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=19, value=package_amount)
+            cell = worksheet.cell(row=row_idx, column=20, value=package_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
 
             # 총금액
             total_amount = float(row.product_total_amount) if row.product_total_amount else 0.0
-            cell = worksheet.cell(row=row_idx, column=20, value=total_amount)
+            cell = worksheet.cell(row=row_idx, column=21, value=total_amount)
             cell.alignment = right_alignment
             cell.border = thin_border
             cell.number_format = '#,##0'
@@ -1929,20 +1944,21 @@ async def download_shipment_estimate_product_all_excel(
             2: 20,  # 발주번호
             3: 15,  # 물류센터
             4: 15,  # 상태
-            5: 12,  # 입고유형
-            6: 12,  # 입고예정일
-            7: 20,  # 상품번호(SKU ID)
-            8: 20,  # 상품바코드
-            9: 40,  # 상품이름
-            10: 12,  # 확정수량
-            11: 12,  # 포장수량
-            12: 25,  # 박스명
-            13: 20,  # 송장번호
-            14: 30,  # 비고
-            15: 12,  # 단가
-            16: 12,  # 제품금액
-            17: 12,  # 포장금액
-            18: 12  # 총금액
+            5: 15,  # 배송상태
+            6: 12,  # 입고유형
+            7: 12,  # 입고예정일
+            8: 20,  # 상품번호(SKU ID)
+            9: 20,  # 상품바코드
+            10: 40,  # 상품이름
+            11: 12,  # 확정수량
+            12: 12,  # 포장수량
+            13: 25,  # 박스명
+            14: 20,  # 송장번호
+            15: 30,  # 비고
+            16: 12,  # 단가
+            17: 12,  # 제품금액
+            18: 12,  # 포장금액
+            19: 12  # 총금액
         }
 
         for col, width in column_widths.items():
@@ -1984,12 +2000,6 @@ async def download_shipment_estimate_product_all_excel(
             status_code=500,
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
-
-
-from openpyxl import load_workbook
-from fastapi import UploadFile
-import io
-
 
 async def upload_1688_tracking_number(
         order_mst_no: Union[str, int],
@@ -2077,6 +2087,7 @@ async def upload_1688_tracking_number(
                 ).filter(
                     purchase_models.OrderShipmentMst.order_mst_no == order_mst_no,
                     purchase_models.OrderShipmentDtl.sku_id == sku_id,
+                    purchase_models.OrderShipmentMst.order_shipment_mst_status_cd == 'PAYMENT_COMPLETED',  # 입금완료 상태만
                     purchase_models.OrderShipmentDtl.order_number == order_number,
                     purchase_models.OrderShipmentDtl.del_yn == 0,
                     purchase_models.OrderShipmentMst.del_yn == 0
@@ -2085,7 +2096,7 @@ async def upload_1688_tracking_number(
                 if not shipment_dtl:
                     error_details.append({
                         "row": row_idx,
-                        "error": "해당 SKU ID와 발주번호로 데이터를 찾을 수 없습니다.",
+                        "error": "해당 SKU ID와 발주번호로 데이터를 찾을 수 없거나 입금완료 상태가 아닙니다.",
                         "sku_id": sku_id,
                         "order_number": order_number
                     })
