@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     scheduler.add_job(
         func=scheduler_1688.sync_1688_order_status, # 1688 구매 상태 배치
         #trigger=CronTrigger(hour=0, minute=22, second=30), # 매일 자정 0시 0분 0초
-        trigger=IntervalTrigger(minutes=1),  # N초마다 실행
+        trigger=IntervalTrigger(hours=6),  # N초마다 실행
         id='sync_1688_orders',
         name='1688 주문 동기화'
     )
