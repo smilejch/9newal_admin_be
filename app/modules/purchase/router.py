@@ -151,14 +151,14 @@ async def download_shipment_estimate_product_all_excel(
         db
     )
 
-@purchase_router.post("/orders/{order_mst_no}/1688-tracking-number/upload")
-async def upload_1688_tracking_number(
+@purchase_router.post("/orders/{order_mst_no}/1688-order-number/upload")
+async def upload_1688_order_number(
     request: Request,
     order_mst_no: Union[str, int] = Path(...),
     file: UploadFile = File(...),
     db: Session = Depends(get_db)
 ) -> ApiResponse[dict]:
-    return await purchase_service.upload_1688_tracking_number(order_mst_no, file, request, db)
+    return await purchase_service.upload_1688_order_number(order_mst_no, file, request, db)
 
 
 @purchase_router.post("/shipments/cj-tracking-number/issue")

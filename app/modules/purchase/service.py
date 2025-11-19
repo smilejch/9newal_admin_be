@@ -23,7 +23,7 @@ from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
 import tempfile
 import os
 from datetime import datetime
-from app.utils import alibaba_1688_util
+from app.utils import alibaba_1688_util, file_util
 from collections import defaultdict
 from urllib.parse import quote
 from openpyxl import load_workbook
@@ -1831,6 +1831,8 @@ async def download_shipment_estimate_product_all_excel(
             cell = worksheet.cell(row=row_idx, column=2, value=row.purchase_order_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
+            if row.order_shipment_mst_status_cd == "PAYMENT_COMPLETED":
+                cell.fill = yellow_fill
 
             # 발주번호
             cell = worksheet.cell(row=row_idx, column=3, value=row.order_number)
@@ -1896,8 +1898,6 @@ async def download_shipment_estimate_product_all_excel(
             cell = worksheet.cell(row=row_idx, column=15, value=row.purchase_tracking_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
-            if row.order_shipment_mst_status_cd == "PAYMENT_COMPLETED":
-                cell.fill = yellow_fill
 
             # 송장번호 (cj 운송장번호)
             cell = worksheet.cell(row=row_idx, column=16, value=row.tracking_number)
@@ -2000,14 +2000,13 @@ async def download_shipment_estimate_product_all_excel(
             status_code=500,
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
-
-async def upload_1688_tracking_number(
+async def upload_1688_order_number(
         order_mst_no: Union[str, int],
         file: UploadFile,
         request: Request,
         db: Session
 ) -> common_response.ApiResponse[dict]:
-    """1688 송장번호 엑셀 업로드 및 업데이트"""
+    """1688 구매번호 엑셀 업로드 및 업데이트"""
     try:
         # 사용자 인증
         user_no, company_no = get_authenticated_user_no(request)
@@ -2047,22 +2046,23 @@ async def upload_1688_tracking_number(
         for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, values_only=True), start=2):
             try:
                 # 컬럼 매핑
-                estimate_id = row[0]  # 견적서 번호 (A열)
-                purchase_order_number = row[1]  # 구매번호 (B열)
-                order_number = row[2]  # 발주번호 (C열)
-                center_name = row[3]  # 물류센터 (D열)
-                status = row[4]  # 상태 (E열)
-                transport_type = row[5]  # 입고유형 (F열)
-                edd = row[6]  # 입고예정일 (G열)
-                sku_id = row[7]  # 상품번호(SKU ID) (H열)
-                sku_barcode = row[8]  # 상품바코드 (I열)
-                sku_name = row[9]  # 상품이름 (J열)
-                confirmed_quantity = row[10]  # 확정수량 (K열)
-                packing_quantity = row[11]  # 포장수량 (L열)
-                box_name = row[12]  # 박스명 (M열)
-                purchase_tracking_number = row[13]  # 1688 송장번호 (N열)
-                tracking_number = row[14]  # CJ 송장번호 (O열)
-                remark = row[15]  # 비고 (P열)
+                estimate_id = row[0]  # 견적서 번호
+                purchase_order_number = row[1]  # 구매번호
+                order_number = row[2]  # 발주번호
+                center_name = row[3]  # 물류센터
+                status = row[4]  # 상태
+                delivery_status = row[5]  # 배송상태
+                transport_type = row[6]  # 입고유형
+                edd = row[7]  # 입고예정일
+                sku_id = row[8]  # 상품번호(SKU ID)
+                sku_barcode = row[9]  # 상품바코드
+                sku_name = row[10]  # 상품이름
+                confirmed_quantity = row[11]  # 확정수량
+                packing_quantity = row[12]  # 포장수량
+                box_name = row[13]  # 박스명
+                purchase_tracking_number = row[14]  # 1688 송장번호
+                tracking_number = row[15]  # CJ 송장번호
+                remark = row[16]  # 비고
 
                 # 필수 필드 체크 (SKU ID와 발주번호는 필수)
                 if not sku_id or not order_number:
@@ -2075,8 +2075,8 @@ async def upload_1688_tracking_number(
                     error_count += 1
                     continue
 
-                # 송장번호가 없으면 스킵
-                if not purchase_tracking_number or str(purchase_tracking_number).strip() == "":
+                # 구매번호가 없으면 스킵
+                if not purchase_order_number or str(purchase_order_number).strip() == "":
                     continue
 
                 # OrderShipmentDtl에서 해당 레코드 찾기
@@ -2094,29 +2094,19 @@ async def upload_1688_tracking_number(
                 ).first()
 
                 if not shipment_dtl:
-                    error_details.append({
-                        "row": row_idx,
-                        "error": "해당 SKU ID와 발주번호로 데이터를 찾을 수 없거나 입금완료 상태가 아닙니다.",
-                        "sku_id": sku_id,
-                        "order_number": order_number
-                    })
+                    error_details.append(f"행 {row_idx}: 해당 SKU ID와 발주번호로 데이터를 찾을 수 없거나 입금완료 상태가 아닙니다.")
                     error_count += 1
                     continue
 
-                # purchase_tracking_number 업데이트
-                shipment_dtl.purchase_tracking_number = str(purchase_tracking_number).strip()
+                # purchase_order_number 업데이트 ✅
+                shipment_dtl.purchase_order_number = str(purchase_order_number).strip()
                 shipment_dtl.updated_by = user_no
                 shipment_dtl.updated_at = func.now()
 
                 update_count += 1
 
             except Exception as e:
-                error_details.append({
-                    "row": row_idx,
-                    "error": f"처리 중 오류: {str(e)}",
-                    "sku_id": sku_id if 'sku_id' in locals() else None,
-                    "order_number": purchase_tracking_number if 'order_number' in locals() else None
-                })
+                error_details.append(f"행 {row_idx + 2}: {str(e)}")
                 error_count += 1
                 continue
 
@@ -2132,15 +2122,25 @@ async def upload_1688_tracking_number(
             "error_details": error_details if error_details else None
         }
 
-        if error_count > 0:
-            message = f"1688 송장번호 업로드가 부분적으로 완료되었습니다. (성공: {update_count}건, 실패: {error_count}건)"
+        if len(error_details) > 0:
+            db.rollback()
+            return file_util.handle_error(
+                db=db,
+                message=f"1688 구매번호 업로드가 부분적으로 완료되었습니다. (성공: {update_count}건, 실패: {error_count}건)",
+                error_details=error_details,
+                error_count=len(error_details)
+            )
         else:
-            message = f"1688 송장번호 업로드가 완료되었습니다. (총 {update_count}건 업데이트)"
 
-        return common_response.ResponseBuilder.success(
-            data=response_data,
-            message=message
-        )
+            if error_count > 0:
+                message = f"1688 구매번호 업로드가 부분적으로 완료되었습니다. (성공: {update_count}건, 실패: {error_count}건)"
+            else:
+                message = f"1688 구매번호 업로드가 완료되었습니다. (총 {update_count}건 업데이트)"
+
+            return common_response.ResponseBuilder.success(
+                data=response_data,
+                message=message
+            )
 
     except HTTPException:
         db.rollback()
@@ -2149,7 +2149,7 @@ async def upload_1688_tracking_number(
         db.rollback()
         raise HTTPException(
             status_code=400,
-            detail=f"1688 송장번호 업로드 중 오류가 발생했습니다: {str(e)}"
+            detail=f"1688 구매번호 업로드 중 오류가 발생했습니다: {str(e)}"
         )
 
 
