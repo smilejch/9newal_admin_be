@@ -2080,21 +2080,26 @@ async def upload_1688_order_number(
                     continue
 
                 # OrderShipmentDtl에서 해당 레코드 찾기
-                # order_mst_no -> OrderShipmentMst -> OrderShipmentDtl
+                # order_mst_no -> OrderShipmentMst -> OrderShipmentDtl -> OrderShipmentEstimateProduct
                 shipment_dtl = db.query(purchase_models.OrderShipmentDtl).join(
                     purchase_models.OrderShipmentMst,
                     purchase_models.OrderShipmentDtl.order_shipment_mst_no == purchase_models.OrderShipmentMst.order_shipment_mst_no
+                ).join(
+                    purchase_models.OrderShipmentEstimateProduct,
+                    purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no
                 ).filter(
                     purchase_models.OrderShipmentMst.order_mst_no == order_mst_no,
                     purchase_models.OrderShipmentDtl.sku_id == sku_id,
                     purchase_models.OrderShipmentMst.order_shipment_mst_status_cd == 'PAYMENT_COMPLETED',  # 입금완료 상태만
                     purchase_models.OrderShipmentDtl.order_number == order_number,
+                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,  # ✅ 견적 실패 제외
                     purchase_models.OrderShipmentDtl.del_yn == 0,
-                    purchase_models.OrderShipmentMst.del_yn == 0
+                    purchase_models.OrderShipmentMst.del_yn == 0,
+                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0  # ✅ EstimateProduct 삭제 여부도 체크
                 ).first()
 
                 if not shipment_dtl:
-                    error_details.append(f"행 {row_idx}: 해당 SKU ID와 발주번호로 데이터를 찾을 수 없거나 입금완료 상태가 아닙니다.")
+                    error_details.append(f"행 {row_idx}: 해당 SKU ID와 발주번호로 데이터를 찾을 수 없거나 입금완료 상태가 아니거나 견적이 실패한 상품입니다.")
                     error_count += 1
                     continue
 
