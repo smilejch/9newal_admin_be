@@ -1705,6 +1705,7 @@ async def download_shipment_estimate_product_all_excel(
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_total_amount,
             purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),
             purchase_models.OrderShipmentEstimateProduct.remark,
+            purchase_models.OrderShipmentEstimateProduct.fail_yn,
 
             # Estimate 컬럼
             purchase_models.OrderShipmentEstimate.estimate_id,
@@ -1831,7 +1832,7 @@ async def download_shipment_estimate_product_all_excel(
             cell = worksheet.cell(row=row_idx, column=2, value=row.purchase_order_number)
             cell.alignment = cell_alignment
             cell.border = thin_border
-            if row.order_shipment_mst_status_cd == "PAYMENT_COMPLETED":
+            if row.order_shipment_mst_status_cd == "PAYMENT_COMPLETED" and row.fail_yn == 0:
                 cell.fill = yellow_fill
 
             # 발주번호
