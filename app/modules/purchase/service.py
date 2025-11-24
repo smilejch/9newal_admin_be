@@ -1255,6 +1255,19 @@ def confirm_estimate_deposit(
             synchronize_session=False
         )
 
+        # 관련된 모든 DTL의 상태도 함께 업데이트
+        db.query(purchase_models.OrderShipmentDtl).filter(
+            purchase_models.OrderShipmentDtl.order_shipment_mst_no.in_(shipment_mst_no_list),
+            purchase_models.OrderShipmentDtl.del_yn == 0
+        ).update(
+            {
+                "order_shipment_dtl_status_cd": "PAYMENT_COMPLETED",
+                "updated_by": user_no,
+                "updated_at": func.now()
+            },
+            synchronize_session=False
+        )
+
         # 5. 견적서의 deposit_yn을 1로 업데이트 (입금확인)
         estimate.deposit_yn = 1
         estimate.updated_by = user_no
