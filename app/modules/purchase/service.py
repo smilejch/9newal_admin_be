@@ -419,7 +419,7 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
             purchase_models.OrderShipmentPackingDtl.tracking_number,
 
-            # ✅ PackingMst 컬럼 추가
+            #  PackingMst 컬럼 추가
             purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no
         ).join(
             purchase_models.OrderShipmentEstimate,
@@ -439,7 +439,7 @@ def fetch_shipment_estimate_product_list(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
             )
-        ).outerjoin(  # ✅ PackingMst 조인 추가
+        ).outerjoin(  #  PackingMst 조인 추가
             purchase_models.OrderShipmentPackingMst,
             and_(
                 purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
@@ -844,7 +844,7 @@ def fetch_shipment_estimate_product_list_all(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
             )
-        ).outerjoin(  # ✅ PackingMst 조인 추가
+        ).outerjoin(  #  PackingMst 조인 추가
             purchase_models.OrderShipmentPackingMst,
             and_(
                 purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
@@ -1636,10 +1636,10 @@ async def download_shipment_estimate_excel(
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"견적리스트_{order_mst_no}_{current_time}.xlsx"
 
-        # ✅ 한글 파일명 인코딩
+        #  한글 파일명 인코딩
         encoded_filename = quote(filename)
 
-        # ✅ FileResponse 반환
+        #  FileResponse 반환
         response = FileResponse(
             path=temp_path,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -1990,10 +1990,10 @@ async def download_shipment_estimate_product_all_excel(
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"견적상품목록_{order_mst_no}_{current_time}.xlsx"
 
-        # ✅ 한글 파일명 인코딩
+        #  한글 파일명 인코딩
         encoded_filename = quote(filename)
 
-        # ✅ FileResponse 반환
+        #  FileResponse 반환
         response = FileResponse(
             path=temp_path,
             media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
@@ -2014,6 +2014,7 @@ async def download_shipment_estimate_product_all_excel(
             status_code=500,
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
+
 async def upload_1688_order_number(
         order_mst_no: Union[str, int],
         file: UploadFile,
@@ -2106,10 +2107,10 @@ async def upload_1688_order_number(
                     purchase_models.OrderShipmentDtl.sku_id == sku_id,
                     purchase_models.OrderShipmentMst.order_shipment_mst_status_cd == 'PAYMENT_COMPLETED',  # 입금완료 상태만
                     purchase_models.OrderShipmentDtl.order_number == order_number,
-                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,  # ✅ 견적 실패 제외
+                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,  #  견적 실패 제외
                     purchase_models.OrderShipmentDtl.del_yn == 0,
                     purchase_models.OrderShipmentMst.del_yn == 0,
-                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0  # ✅ EstimateProduct 삭제 여부도 체크
+                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0  #  EstimateProduct 삭제 여부도 체크
                 ).first()
 
                 if not shipment_dtl:
@@ -2117,8 +2118,9 @@ async def upload_1688_order_number(
                     error_count += 1
                     continue
 
-                # purchase_order_number 업데이트 ✅
+                # purchase_order_number 업데이트 
                 shipment_dtl.purchase_order_number = str(purchase_order_number).strip()
+                shipment_dtl.order_shipment_dtl_status_cd = "PURCHASE_PROCESSING"
                 shipment_dtl.updated_by = user_no
                 shipment_dtl.updated_at = func.now()
 
@@ -2233,7 +2235,7 @@ async def issue_cj_tracking_number(
                 # 4. API 응답 검증 및 운송장 번호 추출
                 tracking_number = None
 
-                # ✅ RESULT_CD 체크
+                #  RESULT_CD 체크
                 if not cj_response or cj_response.get("RESULT_CD") != "S":
                     error_message = cj_response.get("RESULT_DETAIL", "알 수 없는 오류") if cj_response else "API 응답 없음"
                     error_details.append({
@@ -2245,7 +2247,7 @@ async def issue_cj_tracking_number(
                     error_count += 1
                     continue
 
-                # ✅ INVC_NO 추출
+                #  INVC_NO 추출
                 if "DATA" in cj_response and cj_response["DATA"]:
                     tracking_number = cj_response["DATA"].get("INVC_NO")
 
@@ -2265,7 +2267,7 @@ async def issue_cj_tracking_number(
                 packing_mst.updated_at = func.now()
 
                 # 6. 해당 PackingMst에 속한 PackingDtl 중 fail_yn이 0인 것만 업데이트
-                # ✅ 1단계: fail_yn이 0인 order_shipment_dtl_no를 서브쿼리로 추출
+                #  1단계: fail_yn이 0인 order_shipment_dtl_no를 서브쿼리로 추출
                 valid_dtl_nos_subquery = db.query(
                     purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no
                 ).filter(
@@ -2273,7 +2275,7 @@ async def issue_cj_tracking_number(
                     purchase_models.OrderShipmentEstimateProduct.del_yn == 0
                 ).subquery()
 
-                # ✅ 2단계: 서브쿼리 결과를 사용하여 업데이트 (join 없음)
+                #  2단계: 서브쿼리 결과를 사용하여 업데이트 (join 없음)
                 updated_dtl_count = db.query(purchase_models.OrderShipmentPackingDtl).filter(
                     purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == packing_mst_no,
                     purchase_models.OrderShipmentPackingDtl.del_yn == 0,
@@ -2387,7 +2389,7 @@ async def create_1688_order(
                 detail="주문 가능한 견적 상품이 없습니다."
             )
 
-        # 2. ✅ openUid별로 그룹화
+        # 2.  openUid별로 그룹화
         grouped_by_seller = defaultdict(lambda: {
             "cargo_map": defaultdict(int),
             "dtl_nos": []
@@ -2410,14 +2412,14 @@ async def create_1688_order(
                     detail=f"1688 연동 정보가 없는 상품입니다. (SKU ID: {shipment_dtl.sku_id})"
                 )
 
-            # ✅ openUid별로 분류
+            #  openUid별로 분류
             seller_data = grouped_by_seller[open_uid]
             cargo_key = (offer_id, spec_id)
             seller_data["cargo_map"][cargo_key] += quantity
             if dtl_no not in seller_data["dtl_nos"]:
                 seller_data["dtl_nos"].append(dtl_no)
 
-        # 3. ✅ 판매자별로 주문 생성
+        # 3.  판매자별로 주문 생성
         created_orders = []
         total_success = 0
         total_error = 0
@@ -2501,6 +2503,7 @@ async def create_1688_order(
                 ).update(
                     {
                         "purchase_order_number": order_id,
+                        "order_shipment_dtl_status_cd": "PURCHASE_PROCESSING",
                         "updated_by": user_no,
                         "updated_at": func.now()
                     },
