@@ -625,11 +625,15 @@ def fetch_shipment_dtl_all_list(
 
         # 공통코드
         shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD", db)
+        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_DTL_STATUS_CD", db)
 
         # 결과 데이터 변환
         dtl_data_list = []
         for mst, dtl, packing_dtl, packing_mst, center_name in results:
-            com_code = shipment_status_com_code_dict.get(mst.order_shipment_mst_status_cd)
+            shipment_status_com_code = shipment_status_com_code_dict.get(mst.order_shipment_mst_status_cd)
+            shipment_dtl_status_com_code = shipment_dtl_status_com_code_dict.get(dtl.order_shipment_dtl_status_cd)
+            order_shipment_dtl_status_name = shipment_dtl_status_com_code.code_name if shipment_dtl_status_com_code else ""
+            order_shipment_dtl_status_color = shipment_dtl_status_com_code.keyword1 if shipment_dtl_status_com_code else ""
             combined_data = {
                 # MST 정보
                 "order_shipment_mst_no": mst.order_shipment_mst_no,
@@ -639,8 +643,8 @@ def fetch_shipment_dtl_all_list(
                 "center_name": center_name,
                 "edd": mst.edd,
                 "order_shipment_mst_status_cd": mst.order_shipment_mst_status_cd,
-                "order_shipment_mst_status_name": com_code.code_name,
-                "order_shipment_mst_status_color": com_code.keyword1,
+                "order_shipment_mst_status_name": shipment_status_com_code.code_name,
+                "order_shipment_mst_status_color": shipment_status_com_code.keyword1,
                 "mst_created_at": mst.created_at,
                 "mst_created_by": mst.created_by,
                 "mst_updated_at": mst.updated_at,
@@ -649,6 +653,9 @@ def fetch_shipment_dtl_all_list(
                 # DTL 정보
                 "order_shipment_dtl_no": dtl.order_shipment_dtl_no,
                 "order_shipment_packing_mst_no": dtl.order_shipment_packing_mst_no,
+                "order_shipment_status_cd": dtl.order_shipment_dtl_status_cd,
+                "order_shipment_dtl_status_name": order_shipment_dtl_status_name,
+                "order_shipment_dtl_status_color": order_shipment_dtl_status_color,
                 "company_no": dtl.company_no,
                 "order_number": dtl.order_number,
                 "transport_type": dtl.transport_type,
@@ -743,6 +750,14 @@ def fetch_shipment_estimate_product_list_all(
             common_models.ComCode.use_yn == 1
         ).scalar_subquery()
 
+        # 쉽먼트 DTL 상태명 서브쿼리
+        shipment_dtl_status_subquery = db.query(common_models.ComCode.code_name).filter(
+            common_models.ComCode.com_code == purchase_models.OrderShipmentDtl.order_shipment_dtl_status_cd,
+            common_models.ComCode.parent_com_code == 'ORDER_SHIPMENT_DTL_STATUS_CD',
+            common_models.ComCode.del_yn == 0,
+            common_models.ComCode.use_yn == 1
+        ).scalar_subquery()
+
         # 포장비닐 사양명 서브쿼리
         vinyl_spec_subquery = db.query(common_models.ComCode.code_name).filter(
             common_models.ComCode.com_code == purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
@@ -818,6 +833,8 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentDtl.purchase_tracking_number,
             purchase_models.OrderShipmentDtl.purchase_order_number,
             purchase_models.OrderShipmentDtl.delivery_status,
+            purchase_models.OrderShipmentDtl.order_shipment_dtl_status_cd,
+            shipment_dtl_status_subquery.label("order_shipment_dtl_status_name"),
 
             # PackingDtl 컬럼
             purchase_models.OrderShipmentPackingDtl.packing_quantity,
@@ -869,7 +886,13 @@ def fetch_shipment_estimate_product_list_all(
 
         # 결과 데이터 변환
         estimate_product_list = []
+
+        # 공통코드
+        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_DTL_STATUS_CD", db)
+
         for row in results:
+            shipment_dtl_status_com_code = shipment_dtl_status_com_code_dict.get(row.order_shipment_dtl_status_cd)
+            order_shipment_dtl_status_color = shipment_dtl_status_com_code.keyword1 if shipment_dtl_status_com_code else ""
             combined_data = {
                 # 견적 상품 정보
                 "order_shipment_estimate_product_no": row.order_shipment_estimate_product_no,
@@ -936,6 +959,9 @@ def fetch_shipment_estimate_product_list_all(
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
                 "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
                 "delivery_status": row.delivery_status if row.delivery_status else None,
+                "order_shipment_dtl_status_cd": row.order_shipment_dtl_status_cd,
+                "order_shipment_dtl_status_name": row.order_shipment_dtl_status_name,
+                "order_shipment_dtl_status_color": order_shipment_dtl_status_color,
 
                 # Packing 정보
                 "packing_quantity": row.packing_quantity if row.packing_quantity else None,
