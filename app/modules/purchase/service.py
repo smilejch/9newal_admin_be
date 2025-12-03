@@ -2404,9 +2404,7 @@ async def create_1688_order(
             purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
             purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
             purchase_models.OrderShipmentDtl.del_yn == 0,
-            purchase_models.OrderShipmentDtl.company_no == company_no,
             set_models.SetSku.del_yn == 0,
-            set_models.SetSku.company_no == company_no
         ).all()
 
         if not estimate_products:
