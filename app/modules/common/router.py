@@ -40,9 +40,9 @@ def fetch_hs_codes(
 def update_company_profile(company_request: common_schemas.CompanyUpdateRequest, request: Request, db: Session = Depends(get_db)):
     return common_service.update_company_profile(company_request, request, db)
 
-@common_router.get("/company/profile")
-def fetch_company_profile(request: Request, db: Session = Depends(get_db)):
-    return common_service.fetch_company_profile(request, db)
+@common_router.get("/company/{company_no}/profile")
+def fetch_company_profile(request: Request, db: Session = Depends(get_db), company_no: Union[str, int] = Path(...),):
+    return common_service.fetch_company_profile(request, db, company_no)
 
 # 회사 목록 조회
 @common_router.get("/companies")

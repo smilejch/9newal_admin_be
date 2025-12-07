@@ -51,7 +51,6 @@ class SetCenter(Base):
     __tablename__ = "SET_CENTER"
 
     center_no = Column(Integer, primary_key=True, autoincrement=True, comment='센터 고유 번호')
-    company_no = Column(Integer, comment="회사 No")
     center_initial = Column(String(20), nullable=False, comment='센터 이니셜 (약어)')
     center_name = Column(String(100), nullable=False, comment='센터 이름')
     center_tel = Column(String(20), nullable=True, comment='센터 전화번호')

@@ -330,8 +330,7 @@ def update_company_profile(company_request: common_schemas.CompanyUpdateRequest,
 
     return existing_company
 
-def fetch_company_profile(request: Request, db: Session):
-    user_no, company_no = get_authenticated_user_no(request)
+def fetch_company_profile(request: Request, db: Session, company_no):
     company_profile = db.query(auth_models.ComCompany).filter(auth_models.ComCompany.company_no == company_no).first()
 
     return common_schemas.CompanyProfileResponse(

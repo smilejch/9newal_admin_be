@@ -30,13 +30,13 @@ from openpyxl import load_workbook
 from fastapi import UploadFile
 import io
 
-def fetch_order_mst_list(
-    filter: purchase_schemas.OrderMstFilterRequest,
-    request: Request,
-    pagination: common_request.PaginationRequest = Depends(),
-    db: Session = Depends(get_db)
-) -> ApiResponse[Union[PageResponse[purchase_schemas.OrderMstResponse], None]]:
 
+def fetch_order_mst_list(
+        filter: purchase_schemas.OrderMstFilterRequest,
+        request: Request,
+        pagination: common_request.PaginationRequest = Depends(),
+        db: Session = Depends(get_db)
+) -> ApiResponse[Union[PageResponse[purchase_schemas.OrderMstResponse], None]]:
     ComCode = common_models.ComCode
     ComCompany = auth_models.ComCompany
 
@@ -122,6 +122,7 @@ def fetch_order_mst_list(
         size=pagination.size,
         total_elements=total_elements
     )
+
 
 def fetch_purchase_shipment_mst(
         request: Request,
@@ -310,6 +311,9 @@ def fetch_shipment_dtl_list(
             total_elements=total_elements
         )
 
+    except HTTPException:
+        raise
+
     except Exception as e:
         raise HTTPException(
             status_code=400,
@@ -439,7 +443,7 @@ def fetch_shipment_estimate_product_list(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
             )
-        ).outerjoin(  #  PackingMst 조인 추가
+        ).outerjoin(  # PackingMst 조인 추가
             purchase_models.OrderShipmentPackingMst,
             and_(
                 purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
@@ -460,6 +464,9 @@ def fetch_shipment_estimate_product_list(
         # 페이징
         offset = (pagination.page - 1) * pagination.size
         results = query.offset(offset).limit(pagination.size).all()
+
+        # 1688 상품 기본 URL
+        product_base_url = os.getenv('PRODUCT_BASE_URL_1688')
 
         # 결과 데이터 변환
         estimate_product_list = []
@@ -527,6 +534,8 @@ def fetch_shipment_estimate_product_list(
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
                 "tracking_number": row.tracking_number if row.tracking_number else None,
                 "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
+                "product_link_1688": f"{product_base_url}{row.purchase_order_number}" if row.purchase_order_number and str(
+                    row.purchase_order_number).strip() else None,
                 "delivery_status": row.delivery_status if row.delivery_status else None,
 
                 # Packing 정보
@@ -555,13 +564,13 @@ def fetch_shipment_estimate_product_list(
             status_code=400,
             detail=f"견적 상품 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
-    
+
 
 def fetch_shipment_dtl_all_list(
-    order_mst_no: Union[str, int],
-    request: Request,
-    pagination: common_request.PaginationRequest,
-    db: Session
+        order_mst_no: Union[str, int],
+        request: Request,
+        pagination: common_request.PaginationRequest,
+        db: Session
 ) -> common_response.ApiResponse[Union[PageResponse[dict], None]]:
     """발주서 마스터 번호로 모든 쉽먼트 DTL 조회 (MST, PACKING_DTL 정보 포함)"""
     try:
@@ -624,8 +633,10 @@ def fetch_shipment_dtl_all_list(
         results = query.offset(offset).limit(pagination.size).all()
 
         # 공통코드
-        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD", db)
-        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_DTL_STATUS_CD", db)
+        shipment_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_MST_STATUS_CD",
+                                                                                       db)
+        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code(
+            "ORDER_SHIPMENT_DTL_STATUS_CD", db)
 
         # 결과 데이터 변환
         dtl_data_list = []
@@ -687,7 +698,8 @@ def fetch_shipment_dtl_all_list(
                 # PACKING_DTL 정보 (LEFT JOIN으로 가져온 값들)
                 "order_shipment_packing_dtl_no": packing_dtl.order_shipment_packing_dtl_no if packing_dtl else None,
                 "packing_quantity": packing_dtl.packing_quantity if packing_dtl else None,
-                "packing_tracking_number": packing_dtl.tracking_number if packing_dtl else None,  # PACKING_DTL의 tracking_number
+                "packing_tracking_number": packing_dtl.tracking_number if packing_dtl else None,
+                # PACKING_DTL의 tracking_number
 
                 # PACKING_MST 정보 (박스 정보)
                 "box_name": packing_mst.box_name if packing_mst else None,
@@ -708,6 +720,9 @@ def fetch_shipment_dtl_all_list(
             size=pagination.size,
             total_elements=total_elements
         )
+
+    except HTTPException:
+        raise
 
     except Exception as e:
         raise HTTPException(
@@ -861,7 +876,7 @@ def fetch_shipment_estimate_product_list_all(
                 purchase_models.OrderShipmentDtl.order_shipment_dtl_no == purchase_models.OrderShipmentPackingDtl.order_shipment_dtl_no,
                 purchase_models.OrderShipmentPackingDtl.del_yn == 0
             )
-        ).outerjoin(  #  PackingMst 조인 추가
+        ).outerjoin(  # PackingMst 조인 추가
             purchase_models.OrderShipmentPackingMst,
             and_(
                 purchase_models.OrderShipmentPackingDtl.order_shipment_packing_mst_no == purchase_models.OrderShipmentPackingMst.order_shipment_packing_mst_no,
@@ -888,7 +903,11 @@ def fetch_shipment_estimate_product_list_all(
         estimate_product_list = []
 
         # 공통코드
-        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code("ORDER_SHIPMENT_DTL_STATUS_CD", db)
+        shipment_dtl_status_com_code_dict = com_code_util.get_com_code_dict_by_parent_code(
+            "ORDER_SHIPMENT_DTL_STATUS_CD", db)
+
+        # 1688 상품 기본 URL
+        product_base_url = os.getenv('PRODUCT_BASE_URL_1688')
 
         for row in results:
             shipment_dtl_status_com_code = shipment_dtl_status_com_code_dict.get(row.order_shipment_dtl_status_cd)
@@ -958,6 +977,8 @@ def fetch_shipment_estimate_product_list_all(
                 "linked_open_uid": row.linked_open_uid if row.linked_open_uid else None,
                 "purchase_tracking_number": row.purchase_tracking_number if row.purchase_tracking_number else None,
                 "purchase_order_number": row.purchase_order_number if row.purchase_order_number else None,
+                "product_link_1688": f"{product_base_url}{row.purchase_order_number}" if row.purchase_order_number and str(
+                    row.purchase_order_number).strip() else None,
                 "delivery_status": row.delivery_status if row.delivery_status else None,
                 "order_shipment_dtl_status_cd": row.order_shipment_dtl_status_cd,
                 "order_shipment_dtl_status_name": row.order_shipment_dtl_status_name,
@@ -1042,7 +1063,8 @@ def fetch_estimate_mst_list(
                 "product_total_amount": float(estimate.product_total_amount) if estimate.product_total_amount else 0.0,
                 "vinyl_total_amount": float(estimate.vinyl_total_amount) if estimate.vinyl_total_amount else 0.0,
                 "box_total_amount": float(estimate.box_total_amount) if estimate.box_total_amount else 0.0,
-                "estimate_total_amount": float(estimate.estimate_total_amount) if estimate.estimate_total_amount else 0.0,
+                "estimate_total_amount": float(
+                    estimate.estimate_total_amount) if estimate.estimate_total_amount else 0.0,
                 "created_at": estimate.created_at.isoformat() if estimate.created_at else None,
                 "created_by": estimate.created_by,
                 "updated_at": estimate.updated_at.isoformat() if estimate.updated_at else None,
@@ -1064,6 +1086,7 @@ def fetch_estimate_mst_list(
             status_code=400,
             detail=f"견적서 목록 조회 중 오류가 발생했습니다: {str(e)}"
         )
+
 
 def fetch_estimate_dtl(
         order_shipment_estimate_no: Union[str, int],
@@ -1152,7 +1175,8 @@ def fetch_estimate_dtl(
                     "product_amount": float(product.product_total_amount) if product.product_total_amount else 0.0,
                     "package_vinyl_spec_cd": product.package_vinyl_spec_cd,
                     "package_vinyl_spec_name": package_vinyl_spec_name,
-                    "package_amount": float(product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
+                    "package_amount": float(
+                        product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
                     "total_amount": float(product.total_amount) if product.total_amount else 0.0
                 })
 
@@ -1173,7 +1197,8 @@ def fetch_estimate_dtl(
                     "product_amount": float(product.product_total_amount) if product.product_total_amount else 0.0,
                     "package_vinyl_spec_cd": product.package_vinyl_spec_cd,
                     "package_vinyl_spec_name": package_vinyl_spec_name,
-                    "package_amount": float(product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
+                    "package_amount": float(
+                        product.package_vinyl_spec_total_amount) if product.package_vinyl_spec_total_amount else 0.0,
                     "total_amount": float(product.total_amount) if product.total_amount else 0.0,
                     "error_message": product.remark  # 실패 사유
                 })
@@ -1193,10 +1218,12 @@ def fetch_estimate_dtl(
 
         # 7. 총 견적 데이터 포맷팅
         total_estimate = {
-            "product_total_amount": float(estimate_mst.product_total_amount) if estimate_mst.product_total_amount else 0.0,
+            "product_total_amount": float(
+                estimate_mst.product_total_amount) if estimate_mst.product_total_amount else 0.0,
             "vinyl_total_amount": float(estimate_mst.vinyl_total_amount) if estimate_mst.vinyl_total_amount else 0.0,
             "box_total_amount": float(estimate_mst.box_total_amount) if estimate_mst.box_total_amount else 0.0,
-            "grand_total_amount": float(estimate_mst.estimate_total_amount) if estimate_mst.estimate_total_amount else 0.0
+            "grand_total_amount": float(
+                estimate_mst.estimate_total_amount) if estimate_mst.estimate_total_amount else 0.0
         }
 
         # 8. 응답 데이터 구성
@@ -1208,6 +1235,7 @@ def fetch_estimate_dtl(
             "estimate_info": {
                 "order_shipment_estimate_no": estimate_mst.order_shipment_estimate_no,
                 "order_mst_no": estimate_mst.order_mst_no,
+                "company_no": estimate_mst.company_no,
                 "estimate_id": estimate_mst.estimate_id,
                 "estimate_date": estimate_mst.estimate_date,
                 "deposit_yn": estimate_mst.deposit_yn,
@@ -1228,6 +1256,8 @@ def fetch_estimate_dtl(
             status_code=400,
             detail=f"견적서 상세 조회 중 오류가 발생했습니다: {str(e)}"
         )
+
+
 def confirm_estimate_deposit(
         order_shipment_estimate_no: Union[str, int],
         request: Request,
@@ -1341,6 +1371,7 @@ def confirm_estimate_deposit(
             status_code=400,
             detail=f"견적서 입금확인 처리 중 오류가 발생했습니다: {str(e)}"
         )
+
 
 async def download_shipment_dtl_excel(
         order_mst_no: Union[str, int],
@@ -1687,6 +1718,7 @@ async def download_shipment_estimate_excel(
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
 
+
 async def download_shipment_estimate_product_all_excel(
         order_mst_no: Union[str, int],
         request: Request,
@@ -1944,7 +1976,6 @@ async def download_shipment_estimate_product_all_excel(
             cell.alignment = cell_alignment
             cell.border = thin_border
 
-
             # 비고
             cell = worksheet.cell(row=row_idx, column=17, value=row.remark)
             cell.alignment = cell_alignment
@@ -2041,6 +2072,7 @@ async def download_shipment_estimate_product_all_excel(
             detail=f"엑셀 다운로드 중 오류가 발생했습니다: {str(e)}"
         )
 
+
 async def upload_1688_order_number(
         order_mst_no: Union[str, int],
         file: UploadFile,
@@ -2133,10 +2165,10 @@ async def upload_1688_order_number(
                     purchase_models.OrderShipmentDtl.sku_id == sku_id,
                     purchase_models.OrderShipmentMst.order_shipment_mst_status_cd == 'PAYMENT_COMPLETED',  # 입금완료 상태만
                     purchase_models.OrderShipmentDtl.order_number == order_number,
-                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,  #  견적 실패 제외
+                    purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,  # 견적 실패 제외
                     purchase_models.OrderShipmentDtl.del_yn == 0,
                     purchase_models.OrderShipmentMst.del_yn == 0,
-                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0  #  EstimateProduct 삭제 여부도 체크
+                    purchase_models.OrderShipmentEstimateProduct.del_yn == 0  # EstimateProduct 삭제 여부도 체크
                 ).first()
 
                 if not shipment_dtl:
@@ -2144,7 +2176,7 @@ async def upload_1688_order_number(
                     error_count += 1
                     continue
 
-                # purchase_order_number 업데이트 
+                # purchase_order_number 업데이트
                 shipment_dtl.purchase_order_number = str(purchase_order_number).strip()
                 shipment_dtl.order_shipment_dtl_status_cd = "PURCHASE_PROCESSING"
                 shipment_dtl.updated_by = user_no
@@ -2404,7 +2436,9 @@ async def create_1688_order(
             purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
             purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
             purchase_models.OrderShipmentDtl.del_yn == 0,
+            purchase_models.OrderShipmentDtl.company_no == company_no,
             set_models.SetSku.del_yn == 0,
+            set_models.SetSku.company_no == company_no
         ).all()
 
         if not estimate_products:
