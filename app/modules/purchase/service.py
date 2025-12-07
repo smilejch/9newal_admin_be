@@ -1433,7 +1433,7 @@ async def download_shipment_dtl_excel(
 
         if not results:
             raise HTTPException(
-                status_code=404,
+                status_code=400,
                 detail="다운로드할 데이터가 없습니다."
             )
 
@@ -1635,7 +1635,7 @@ async def download_shipment_estimate_excel(
 
         if not results:
             raise HTTPException(
-                status_code=404,
+                status_code=400,
                 detail="다운로드할 데이터가 없습니다."
             )
 
@@ -1832,7 +1832,7 @@ async def download_shipment_estimate_product_all_excel(
 
         if not results:
             raise HTTPException(
-                status_code=404,
+                status_code=400,
                 detail="다운로드할 데이터가 없습니다."
             )
 
