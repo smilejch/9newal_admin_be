@@ -367,6 +367,7 @@ def fetch_shipment_estimate_product_list(
             purchase_models.OrderShipmentEstimateProduct.sku_name,
             purchase_models.OrderShipmentEstimateProduct.bundle,
             purchase_models.OrderShipmentEstimateProduct.purchase_quantity,
+            purchase_models.OrderShipmentEstimateProduct.purchase_pay_link,
             purchase_models.OrderShipmentEstimateProduct.product_unit_price,
             purchase_models.OrderShipmentEstimateProduct.product_total_amount.label("product_product_total_amount"),
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
@@ -484,6 +485,7 @@ def fetch_shipment_estimate_product_list(
                 "sku_name": row.sku_name,
                 "bundle": row.bundle,
                 "purchase_quantity": row.purchase_quantity,
+                "purchase_pay_link": row.purchase_pay_link,
                 "product_unit_price": float(row.product_unit_price) if row.product_unit_price else 0.0,
                 "product_product_total_amount": float(
                     row.product_product_total_amount) if row.product_product_total_amount else 0.0,
@@ -799,6 +801,7 @@ def fetch_shipment_estimate_product_list_all(
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_cd,
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_unit_price,
             purchase_models.OrderShipmentEstimateProduct.package_vinyl_spec_total_amount,
+            purchase_models.OrderShipmentEstimateProduct.purchase_pay_link,
             purchase_models.OrderShipmentEstimateProduct.fail_yn,
             purchase_models.OrderShipmentEstimateProduct.total_amount.label("product_total_amount"),
             purchase_models.OrderShipmentEstimateProduct.remark,
@@ -924,6 +927,7 @@ def fetch_shipment_estimate_product_list_all(
                 "sku_id": row.sku_id,
                 "sku_name": row.sku_name,
                 "bundle": row.bundle,
+                "purchase_pay_link": row.purchase_pay_link,
                 "purchase_quantity": row.purchase_quantity,
                 "product_unit_price": float(row.product_unit_price) if row.product_unit_price else 0.0,
                 "product_product_total_amount": float(
@@ -2407,7 +2411,7 @@ async def create_1688_order(
         request: Request,
         db: Session
 ) -> common_response.ApiResponse[dict]:
-    """1688 실제 주문 생성 (판매자별로 분리)"""
+    """1688 실제 주문 생성 (판매자별로 분리) + 결제 링크 생성"""
     try:
         user_no, company_no = get_authenticated_user_no(request)
         order_shipment_dtl_nos = create_order_request.order_shipment_dtl_nos
@@ -2436,9 +2440,7 @@ async def create_1688_order(
             purchase_models.OrderShipmentEstimateProduct.fail_yn == 0,
             purchase_models.OrderShipmentEstimateProduct.del_yn == 0,
             purchase_models.OrderShipmentDtl.del_yn == 0,
-            purchase_models.OrderShipmentDtl.company_no == company_no,
             set_models.SetSku.del_yn == 0,
-            set_models.SetSku.company_no == company_no
         ).all()
 
         if not estimate_products:
@@ -2447,7 +2449,7 @@ async def create_1688_order(
                 detail="주문 가능한 견적 상품이 없습니다."
             )
 
-        # 2.  openUid별로 그룹화
+        # 2. openUid별로 그룹화
         grouped_by_seller = defaultdict(lambda: {
             "cargo_map": defaultdict(int),
             "dtl_nos": []
@@ -2470,18 +2472,19 @@ async def create_1688_order(
                     detail=f"1688 연동 정보가 없는 상품입니다. (SKU ID: {shipment_dtl.sku_id})"
                 )
 
-            #  openUid별로 분류
+            # openUid별로 분류
             seller_data = grouped_by_seller[open_uid]
             cargo_key = (offer_id, spec_id)
             seller_data["cargo_map"][cargo_key] += quantity
             if dtl_no not in seller_data["dtl_nos"]:
                 seller_data["dtl_nos"].append(dtl_no)
 
-        # 3.  판매자별로 주문 생성
+        # 3. 판매자별로 주문 생성
         created_orders = []
         total_success = 0
         total_error = 0
         error_details = []
+        all_order_numbers = []  # 생성된 모든 주문 번호 수집
 
         for open_uid, seller_data in grouped_by_seller.items():
             try:
@@ -2578,6 +2581,8 @@ async def create_1688_order(
                     "updated_dtl_count": updated_dtl_count
                 })
 
+                # 생성된 주문번호 수집
+                all_order_numbers.append(order_id)
                 total_success += 1
 
             except Exception as e:
@@ -2595,6 +2600,27 @@ async def create_1688_order(
         else:
             db.rollback()
 
+        # 4. 결제 링크 생성 (주문이 하나라도 성공한 경우)
+        payment_link_result = None
+        if all_order_numbers:
+            try:
+                payment_link_result = await alibaba_1688_util.create_payment_link_manual(
+                    order_numbers=all_order_numbers,
+                    account_no=None,  # 랜덤 계정 사용
+                    db=db
+                )
+
+                if payment_link_result.get('success'):
+                    print(f"결제 링크 생성 성공: {payment_link_result.get('pay_url')}")
+                else:
+                    print(f"결제 링크 생성 실패: {payment_link_result.get('message')}")
+            except Exception as e:
+                print(f"결제 링크 생성 중 오류 발생: {str(e)}")
+                payment_link_result = {
+                    'success': False,
+                    'message': f'결제 링크 생성 중 오류: {str(e)}'
+                }
+
         # 응답 데이터 구성
         response_data = {
             "total_sellers": len(grouped_by_seller),
@@ -2602,7 +2628,8 @@ async def create_1688_order(
             "error_count": total_error,
             "created_orders": created_orders,
             "error_details": error_details if error_details else None,
-            "total_dtl_count": len(order_shipment_dtl_nos)
+            "total_dtl_count": len(order_shipment_dtl_nos),
+            "payment_link": payment_link_result  # 결제 링크 정보 추가
         }
 
         if total_error > 0 and total_success > 0:
@@ -2611,6 +2638,13 @@ async def create_1688_order(
             message_text = f"1688 주문 생성에 실패했습니다. (실패: {total_error}개 판매자)"
         else:
             message_text = f"1688 주문이 생성되었습니다. (총 {total_success}개 판매자, {len(created_orders)}개 주문)"
+
+        # 결제 링크 생성 결과를 메시지에 추가
+        if payment_link_result:
+            if payment_link_result.get('success'):
+                message_text += f" | 결제 링크가 생성되었습니다."
+            else:
+                message_text += f" | 결제 링크 생성 실패: {payment_link_result.get('message')}"
 
         return common_response.ResponseBuilder.success(
             data=response_data,

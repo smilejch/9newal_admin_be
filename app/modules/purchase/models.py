@@ -239,6 +239,7 @@ class OrderShipmentEstimateProduct(Base):
     fail_yn = Column(Integer, nullable=False, default=0, comment='가구매 견적 실패 여부 (0: 성공, 1: 실패)')
     total_amount = Column(DECIMAL(14, 2), nullable=False, default=0.00, comment='총 금액')
     purchase_order_number = Column(String(100), comment="1688 구매 번호")
+    purchase_pay_link = Column(String(100), comment="1688 결제 링크")
     purchase_tracking_number = Column(String(100), comment="1688 운송장 번호")
     remark = Column(String(500), nullable=True, comment='비고')
     platform_type_cd = Column(String(50), comment="플랫폼 구분(ROCKET : 로켓, GROWTH : 그로스)")
