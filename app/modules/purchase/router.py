@@ -186,3 +186,18 @@ async def create_1688_order(
         request,
         db
     )
+
+
+@purchase_router.post("/shipments/payment-link/create")
+async def create_payment_link(
+    request: Request,
+    payment_link_request: purchase_schemas.CreatePaymentLinkRequest,
+    db: Session = Depends(get_db)
+) -> ApiResponse[dict]:
+    """선택한 쉽먼트 DTL의 결제 링크 생성"""
+    return await purchase_service.create_payment_link(
+        payment_link_request,
+        request,
+        db
+    )
+

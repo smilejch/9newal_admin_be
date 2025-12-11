@@ -36,18 +36,10 @@ async def lifespan(app: FastAPI):
     # 스케줄러 작업 등록
     scheduler.add_job(
         func=scheduler_1688.sync_1688_order_status,  # 1688 구매 상태 배치 (함수만 전달, () 제거)
-        trigger=IntervalTrigger(hours=6),
+        trigger=IntervalTrigger(hours=2),
         id='sync_1688_order_status',  # 고유한 ID
         name='1688 주문 상태 동기화'
     )
-
-    scheduler.add_job(
-        func=scheduler_1688.sync_1688_payment_links,  # 1688 결제링크 배치 (함수만 전달, () 제거)
-        trigger=IntervalTrigger(minutes=60),  # 30분마다 실행
-        id='sync_1688_payment_links',  # 고유한 ID
-        name='1688 결제 링크 동기화'
-    )
-
 
     scheduler.start()
     print("APScheduler started")

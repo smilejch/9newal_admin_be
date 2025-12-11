@@ -149,3 +149,8 @@ class IssueCjTackingNumberRequest(BaseModel):
 class Create1688OrderRequest(BaseModel):
     order_shipment_dtl_nos: List[int]  # 쉽먼트 DTL 번호 리스트
     message: Optional[str] = None  # 구매자 메시지
+
+
+class CreatePaymentLinkRequest(BaseModel):
+    """결제 링크 생성 요청"""
+    order_shipment_dtl_nos: List[int]

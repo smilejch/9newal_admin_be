@@ -2600,27 +2600,6 @@ async def create_1688_order(
         else:
             db.rollback()
 
-        # 4. 결제 링크 생성 (주문이 하나라도 성공한 경우)
-        payment_link_result = None
-        if all_order_numbers:
-            try:
-                payment_link_result = await alibaba_1688_util.create_payment_link_manual(
-                    order_numbers=all_order_numbers,
-                    account_no=None,  # 랜덤 계정 사용
-                    db=db
-                )
-
-                if payment_link_result.get('success'):
-                    print(f"결제 링크 생성 성공: {payment_link_result.get('pay_url')}")
-                else:
-                    print(f"결제 링크 생성 실패: {payment_link_result.get('message')}")
-            except Exception as e:
-                print(f"결제 링크 생성 중 오류 발생: {str(e)}")
-                payment_link_result = {
-                    'success': False,
-                    'message': f'결제 링크 생성 중 오류: {str(e)}'
-                }
-
         # 응답 데이터 구성
         response_data = {
             "total_sellers": len(grouped_by_seller),
@@ -2628,8 +2607,7 @@ async def create_1688_order(
             "error_count": total_error,
             "created_orders": created_orders,
             "error_details": error_details if error_details else None,
-            "total_dtl_count": len(order_shipment_dtl_nos),
-            "payment_link": payment_link_result  # 결제 링크 정보 추가
+            "total_dtl_count": len(order_shipment_dtl_nos)
         }
 
         if total_error > 0 and total_success > 0:
@@ -2638,13 +2616,6 @@ async def create_1688_order(
             message_text = f"1688 주문 생성에 실패했습니다. (실패: {total_error}개 판매자)"
         else:
             message_text = f"1688 주문이 생성되었습니다. (총 {total_success}개 판매자, {len(created_orders)}개 주문)"
-
-        # 결제 링크 생성 결과를 메시지에 추가
-        if payment_link_result:
-            if payment_link_result.get('success'):
-                message_text += f" | 결제 링크가 생성되었습니다."
-            else:
-                message_text += f" | 결제 링크 생성 실패: {payment_link_result.get('message')}"
 
         return common_response.ResponseBuilder.success(
             data=response_data,
@@ -2659,4 +2630,147 @@ async def create_1688_order(
         raise HTTPException(
             status_code=400,
             detail=f"1688 주문 생성 중 오류가 발생했습니다: {str(e)}"
+        )
+
+
+async def create_payment_link(
+        payment_link_request: purchase_schemas.CreatePaymentLinkRequest,
+        request: Request,
+        db: Session
+) -> common_response.ApiResponse[dict]:
+    """선택한 쉽먼트 DTL의 결제 링크 생성"""
+    try:
+        user_no, company_no = get_authenticated_user_no(request)
+        order_shipment_dtl_nos = payment_link_request.order_shipment_dtl_nos
+
+        # 1. 유효한 쉽먼트 DTL 조회
+        shipment_dtls = db.query(
+            purchase_models.OrderShipmentDtl
+        ).join(
+            purchase_models.OrderShipmentMst,
+            purchase_models.OrderShipmentDtl.order_shipment_mst_no ==
+            purchase_models.OrderShipmentMst.order_shipment_mst_no
+        ).join(
+            purchase_models.OrderMst,
+            purchase_models.OrderShipmentMst.order_mst_no ==
+            purchase_models.OrderMst.order_mst_no
+        ).filter(
+            and_(
+                purchase_models.OrderShipmentDtl.order_shipment_dtl_no.in_(order_shipment_dtl_nos),
+                purchase_models.OrderShipmentDtl.del_yn == 0,
+                purchase_models.OrderShipmentMst.del_yn == 0,
+                purchase_models.OrderMst.del_yn == 0
+            )
+        ).all()
+
+        if not shipment_dtls:
+            raise HTTPException(
+                status_code=404,
+                detail="유효한 쉽먼트 정보를 찾을 수 없습니다."
+            )
+
+        # 2. purchase_order_number 추출 (OrderShipmentDtl)
+        dtl_order_numbers = list(set([
+            dtl.purchase_order_number
+            for dtl in shipment_dtls
+            if dtl.purchase_order_number
+        ]))
+
+        # 3. OrderShipmentEstimateProduct에서도 주문번호 확인
+        estimate_products = db.query(
+            purchase_models.OrderShipmentEstimateProduct
+        ).filter(
+            and_(
+                purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no.in_(order_shipment_dtl_nos),
+                purchase_models.OrderShipmentEstimateProduct.purchase_order_number.isnot(None),
+                purchase_models.OrderShipmentEstimateProduct.del_yn == 0
+            )
+        ).all()
+
+        estimate_order_numbers = list(set([
+            product.purchase_order_number
+            for product in estimate_products
+            if product.purchase_order_number
+        ]))
+
+        # 4. 모든 주문번호 합치기
+        all_order_numbers = list(set(dtl_order_numbers + estimate_order_numbers))
+
+        if not all_order_numbers:
+            raise HTTPException(
+                status_code=400,
+                detail="구매 주문 번호를 찾을 수 없습니다. 먼저 1688 주문을 생성해주세요."
+            )
+
+        # 5. 계정 번호 조회 (첫 번째 DTL 기준)
+        first_dtl = shipment_dtls[0]
+        account_no = db.query(
+            purchase_models.OrderShipmentEstimate.account_info_no_1688
+        ).join(
+            purchase_models.OrderMst,
+            purchase_models.OrderShipmentEstimate.order_mst_no ==
+            purchase_models.OrderMst.order_mst_no
+        ).join(
+            purchase_models.OrderShipmentMst,
+            purchase_models.OrderMst.order_mst_no ==
+            purchase_models.OrderShipmentMst.order_mst_no
+        ).filter(
+            and_(
+                purchase_models.OrderShipmentMst.order_shipment_mst_no == first_dtl.order_shipment_mst_no,
+                purchase_models.OrderShipmentEstimate.del_yn == 0
+            )
+        ).first()
+
+        account_info_no = account_no[0] if account_no else None
+
+        # 6. 1688 결제 링크 생성
+        payment_result = await alibaba_1688_util.create_payment_link_by_order_numbers(
+            order_numbers=all_order_numbers,
+            account_no=account_info_no
+        )
+
+        if not payment_result.get('success'):
+            raise HTTPException(
+                status_code=400,
+                detail=payment_result.get('message', '결제 링크 생성에 실패했습니다.')
+            )
+
+        pay_url = payment_result.get('pay_url')
+
+        # 7. OrderShipmentEstimateProduct 업데이트
+        updated_count = db.query(
+            purchase_models.OrderShipmentEstimateProduct
+        ).filter(
+            and_(
+                purchase_models.OrderShipmentEstimateProduct.order_shipment_dtl_no.in_(order_shipment_dtl_nos),
+                purchase_models.OrderShipmentEstimateProduct.purchase_order_number.in_(all_order_numbers),
+                purchase_models.OrderShipmentEstimateProduct.del_yn == 0
+            )
+        ).update({
+            'purchase_pay_link': pay_url,
+            'updated_by': user_no,
+            'updated_at': datetime.now()
+        }, synchronize_session=False)
+
+        db.commit()
+
+        response_data = {
+            'pay_url': pay_url,
+            'order_numbers': all_order_numbers,
+            'updated_count': updated_count
+        }
+
+        return common_response.ResponseBuilder.success(
+            data=response_data,
+            message=f'결제 링크가 생성되었습니다. (주문 {len(all_order_numbers)}건)'
+        )
+
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=f"결제 링크 생성 중 오류가 발생했습니다: {str(e)}"
         )

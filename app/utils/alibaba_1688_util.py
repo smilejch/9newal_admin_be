@@ -376,11 +376,12 @@ async def create_payment_link_by_order_numbers(order_numbers: list, account_no: 
             }
         else:
             error_msg = result.get('errorMessage', result.get('errorInfo', 'Unknown error'))
+            trans_error_msg = await translate_chinese_to_korean(error_msg)
             error_code = result.get('errorCode', '')
-            print(f"[{datetime.now()}] 결제 링크 생성 실패: [{error_code}] {error_msg}")
+            print(f"[{datetime.now()}] 결제 링크 생성 실패: [{error_code}] {trans_error_msg}")
             return {
                 'success': False,
-                'message': f'결제 링크 생성에 실패했습니다: {error_msg}',
+                'message': trans_error_msg,
                 'error_code': error_code
             }
 
